@@ -2,16 +2,17 @@
 
 ## Overview
 
-Single global chat room web application with no authentication. Users pick a username which is reserved to their session via HTTP cookies. Real-time message delivery via Server-Sent Events (SSE/EventSource). Self-contained single binary with embedded frontend assets.
+Single global chat room web application with no authentication. Users pick a username which is reserved to their session via an HttpOnly cookie that contains a JULID. The reservation automatically expires after `SESSION_TIMEOUT_SECONDS` (currently 60 s) of inactivity and can be manually released from the UI. Real-time message delivery uses Server-Sent Events (SSE) backed by a Tokio broadcast channel. The entire system ships as one Rust binary that embeds the Svelte SPA build.
 
 ## Core Requirements
 
 - **No Authentication**: Usernames only, no passwords or accounts
-- **Session-Based Username Reservation**: Username locked to session cookie, not IP address
-- **Real-Time Updates**: SSE for live message streaming
-- **Infinite Message History**: All messages persisted, pagination for scrollback
-- **Self-Contained**: Single executable with embedded Svelte frontend
-- **Simple Architecture**: Grug brain philosophy - avoid complexity demon
+- **Session-Based Username Reservation**: Username locked to an HttpOnly cookie containing a JULID
+- **Real-Time Updates**: SSE for live message streaming plus REST fallback for history
+- **Infinite Message History**: All messages persisted in SQLite, newest-first pagination
+- **Self-Contained**: Single executable with embedded Svelte frontend assets
+- **Basic Anti-Spam**: In-memory per-session rate limit (1 message/sec)
+- **Simple Architecture**: Embrace grug constraints; minimize moving parts
 
 ## Architecture
 
@@ -21,16 +22,16 @@ Single global chat room web application with no authentication. Users pick a use
 - **Database**: SQLite with best practices (WAL mode, foreign keys, busy timeout)
 - **Real-Time**: tokio::sync::broadcast queue for pub/sub message distribution
 - **Message Ordering**: UUIDv7 for timestamp-based sortable IDs
-- **Rate Limiting**: (Removed as per simplified requirements)
-- **Session Management**: HTTP-only, Secure cookies with UUIDv4 session IDs
+- **Rate Limiting**: In-memory per-session limiter (HashMap + Instant) enforcing ≥1 s between posts
+- **Session Management**: HttpOnly, Secure cookies holding JULID session IDs with 60 s inactivity timeout
 
 ### Frontend (Svelte)
 
-- **Framework**: Svelte (user will init in `front/` subdirectory)
-- **Build**: Bun + Svelte, dist embedded via include_dir
-- **Real-Time**: EventSource API for SSE connection
-- **Virtual Scrolling**: Svelte library for efficient history rendering
-- **XSS Protection**: textContent only, never innerHTML
+- **Framework**: Svelte 5 SPA (runed state) living in `front/`
+- **Build**: Bun + Vite + Svelte; dist embedded via include_dir
+- **Real-Time**: EventSource API talking to `/api/sse`
+- **History Rendering**: Simple list view kept sorted newest-first via JULID comparisons
+- **XSS Protection**: Render message text as plain text only
 
 ## Database Schema
 
@@ -38,10 +39,10 @@ Single global chat room web application with no authentication. Users pick a use
 
 ```sql
 CREATE TABLE sessions (
-  session_id BLOB PRIMARY KEY,        -- JULID
+  session_id BLOB PRIMARY KEY,        -- JULID bytes
   username TEXT NOT NULL UNIQUE,      -- Unique username
   locked INTEGER NOT NULL DEFAULT 1,  -- 1=active, 0=released
-  last_activity_seconds INTEGER NOT NULL DEFAULT 0     -- Unix timestamp (seconds)
+  last_activity INTEGER NOT NULL DEFAULT CURRENT_TIMESTAMP -- Unix timestamp seconds
 ) STRICT;
 
 CREATE INDEX idx_sessions_username ON sessions(username);
@@ -51,10 +52,10 @@ CREATE INDEX idx_sessions_username ON sessions(username);
 
 ```sql
 CREATE TABLE messages (
-  id BLOB PRIMARY KEY,                -- JULID (superset of ulid, compatible, convertible to uuidv7) (sortable by creation time)
+  id BLOB PRIMARY KEY,                -- JULID (sortable, convertible to UUIDv7 string)
   username TEXT NOT NULL,             -- Foreign key to sessions
   text TEXT NOT NULL,                 -- Message content
-  created_at INTEGER NOT NULL,        -- Unix timestamp (seconds)
+  created_at INTEGER NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(username) REFERENCES sessions(username)
 ) STRICT;
 
@@ -69,14 +70,16 @@ Claim a username and establish session.
 
 **Request Body**: `{"username": "string"}`
 
-**Response**: `{"success": true, "session_id": "uuid"}`
+**Response**: `{"success": true, "session_id": "string", "expires_in": 60}`
 
 **Side Effects**:
 
 - Validates username availability
-- Generates session_id (UUIDv4)
-- Sets cookie: `session_id=<uuid>; HttpOnly; Secure; SameSite=Strict`
+- Generates session_id (JULID, UUIDv7-compatible)
+- Sets cookie: `session_id=<julid>; HttpOnly; Secure; SameSite=Strict; Path=/`
 - Inserts session into DB with locked=1
+- Returns remaining TTL so the frontend countdown can display auto-release timing
+- Updates `last_activity`
 
 ### POST /api/username/release
 
@@ -87,7 +90,9 @@ Manually release username and end session.
 **Side Effects**:
 
 - Sets locked=0 for current session
-- Clears session cookie
+- Clears session cookie (Max-Age=0)
+- Drops rate-limit entry for the released session_id
+- Closes SSE stream client-side
 
 ### POST /api/messages
 
@@ -95,15 +100,16 @@ Send a message to the chat room.
 
 **Request Body**: `{"text": "string"}`
 
-**Response**: `{"success": true, "message_id": "uuid"}`
+**Response**: `{"success": true, "message_id": "string"}`
 
 **Flow**:
 
-1. Validate session cookie exists
-2. Validate message: `length(trimmed(text)) <= 240` and non-empty
-3. Generate UUIDv7 for message ID
-4. Insert message into DB
-5. Broadcast message to all SSE clients via queue
+1. Validate session cookie exists and corresponds to a locked session
+2. Enforce per-session rate limit (one message per second)
+3. Validate message: `length(trimmed(text)) <= 240` and non-empty
+4. Generate JULID/UUIDv7 for message ID
+5. Insert message into DB and update session `last_activity`
+6. Broadcast serialized message JSON to all SSE clients via the broadcast queue
 
 ### GET /api/messages
 
@@ -128,15 +134,12 @@ Server-Sent Events stream for real-time messages.
 
 ```
 event: message
-data: {"id": "uuid", "username": "string", "text": "string", "created_at": 1234567890}
-
-event: ping
-data: {"timestamp": 1234567890}
+data: {"id":"string","username":"string","text":"string","created_at":1234567890}
 ```
 
-**Keep-Alive**: Periodic ping events every 30s
+**Keep-Alive**: Relies on EventSource automatic reconnection; no explicit ping events.
 
-**Disconnection Handling**: After 10s timeout, sets locked=0 for session
+**Disconnection Handling**: Session remains reserved until `SESSION_TIMEOUT_SECONDS` elapses without activity (determined by `last_activity`).
 
 ### GET /api/stats
 
@@ -153,50 +156,47 @@ Serve embedded Svelte application (index.html and assets).
 ### Initial Connection
 
 1. User visits `/`
-2. Frontend checks for session cookie
-3. If no session, prompt for username
-4. User enters username
-5. POST to `/api/username/claim`
-6. Server validates availability, generates session_id, sets cookie
-7. Frontend establishes EventSource to `/api/sse`
-8. Frontend fetches initial messages from `/api/messages`
+2. Frontend prompts for username and POSTs to `/api/username/claim`
+3. Server validates availability, generates JULID, sets cookie, returns TTL
+4. Frontend immediately fetches `/api/messages` for the latest history
+5. Frontend establishes EventSource to `/api/sse`
+6. Countdown indicator starts and reflects auto-release timing
 
 ### Sending Messages
 
 1. User types message (max 240 chars)
 2. Client-side validation (trimmed length, non-empty)
 3. POST to `/api/messages`
-4. Server validates, inserts to DB
-5. Server broadcasts to all SSE connections
-6. All clients receive and display message via SSE
+4. Server enforces rate-limit, validates, inserts to DB, updates session `last_activity`
+5. Successful POST resets the client countdown and clears any error status
+6. Server broadcasts to all SSE connections; every client inserts the message in sorted order
 
 ### Receiving Messages
 
 1. EventSource connection receives `message` events
 2. Parse JSON data
-3. Append to chat UI using `textContent` (XSS-safe)
+3. Insert into sorted list (newest-first) using JULID lexicographic order
 4. Handle `RecvError::Lagged` by re-fetching from `/api/messages`
 
 ### Scrolling History
 
-1. User scrolls to top of message list
-2. Virtual scroller detects need for more data
-3. GET `/api/messages?from=<oldest_visible_id>&limit=50`
-4. Prepend messages to virtual scroll list
+1. User taps Refresh or requests pagination (manual for now)
+2. GET `/api/messages?from=<oldest_visible_id>&limit=50`
+3. Merge results into the sorted message list
 
 ### Manual Logout
 
 1. User clicks logout button
 2. POST to `/api/username/release`
 3. Server sets locked=0, clears cookie
-4. Frontend closes EventSource, redirects to username prompt
+4. Frontend closes EventSource and returns to username prompt
 
 ### Automatic Session Timeout
 
-1. SSE connection drops (network, browser close, etc.)
-2. Server detects disconnection
-3. After 10s grace period (allows reconnection), sets locked=0
-4. Username becomes available for others
+1. Countdown starts at `expires_in` seconds received from the claim response
+2. Each successful message resets the countdown and `last_activity`
+3. When countdown reaches zero without activity, the frontend releases the username and closes SSE
+4. Subsequent claim attempts treat the stale session as expired because `last_activity + SESSION_TIMEOUT_SECONDS < now`
 
 ## Message Validation
 
@@ -220,7 +220,8 @@ Serve embedded Svelte application (index.html and assets).
 - **HttpOnly**: Prevents JavaScript access to session cookie
 - **Secure**: Cookie only sent over HTTPS in production
 - **SameSite=Strict**: CSRF protection
-- **Session IDs**: UUIDv4 (cryptographically random)
+- **Session IDs**: JULID (UUIDv7-compatible, cryptographically strong)
+- **Expiry**: `SESSION_TIMEOUT_SECONDS` enforced via `last_activity`
 
 ### XSS Protection
 
@@ -230,7 +231,9 @@ Serve embedded Svelte application (index.html and assets).
 
 ### Rate Limiting
 
-(Removed)
+- Simple in-memory HashMap keyed by JULID string, tracking the last send `Instant`
+- Enforced inside `handle_post_message` before inserts
+- Limit is currently 1 message per second per session
 
 ### Input Validation
 
@@ -331,7 +334,7 @@ Per [Go + SQLite Best Practices](https://jacob.gold/posts/go-sqlite-best-practic
 
 ```toml
 [dependencies]
-warp = "0.3.7"
+warp = { version = "0.4.2", features = ["server", "test"] }
 tokio = { version = "1.48.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -341,11 +344,12 @@ warp-rate-limit = "0.3.0"
 anyhow = "1.0.100"
 thiserror = "2.0.17"
 sqlx = { version = "0.8.2", features = ["runtime-tokio", "sqlite", "macros"] }
-julid-rs = "1.6.1803398874989"
+julid-rs = { version = "1.6.1803398874989", features = ["serde", "sqlx"] }
 log = "0.4.28"
-env_logger = "0.11.8"
 async-stream = "0.3.6"
 mime_guess = "2.0.5"
+pretty_env_logger = "0.5.0"
+libsqlite3-sys = "0.30"
 ```
 
 ## Implementation Phases
