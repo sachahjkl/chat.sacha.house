@@ -1,0 +1,41 @@
+@base = http://127.0.0.1:3030
+# After a successful claim, copy the returned session_id into this token variable.
+@token = CHANGE_ME
+
+### Claim Username
+# @name claim
+POST {{base}}/api/username/claim
+Content-Type: application/json
+
+{
+  "username": "zozo"
+}
+
+### Send Message
+# Note: Copy the `session_id` from the claim response and set it as:
+# Authorization: Bearer <session_id>
+POST {{base}}/api/messages
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "text": "complexity very bad"
+}
+
+### Get Messages (Recent)
+GET {{base}}/api/messages?limit=10
+Authorization: Bearer {{token}}
+
+### Get Messages (Pagination)
+# Replace {{message_id}} with an actual UUIDv7 from the previous response to test pagination
+# GET {{base}}/api/messages?limit=10&from={{message_id}}
+
+### Subscribe to SSE
+# This request will keep running. Stop it manually.
+# Provide the same bearer token as a query parameter.
+GET {{base}}/api/sse?token={{token}}
+
+### Release Username
+POST {{base}}/api/username/release
+Authorization: Bearer {{token}}
+
