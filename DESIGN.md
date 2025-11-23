@@ -41,8 +41,7 @@ Single global chat room web application with no authentication. Users pick a use
 CREATE TABLE sessions (
   session_id BLOB PRIMARY KEY,        -- JULID bytes
   username TEXT NOT NULL UNIQUE,      -- Unique username
-  locked INTEGER NOT NULL DEFAULT 1,  -- 1=active, 0=released
-  last_activity INTEGER NOT NULL DEFAULT CURRENT_TIMESTAMP -- Unix timestamp seconds
+  last_locked INTEGER NOT NULL DEFAULT 0 -- Unix timestamp seconds of most recent lock
 ) STRICT;
 
 CREATE INDEX idx_sessions_username ON sessions(username);
@@ -62,6 +61,18 @@ CREATE TABLE messages (
 CREATE INDEX idx_messages_created ON messages(created_at);
 ```
 
+### migrations table
+
+```sql
+CREATE TABLE migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at INTEGER NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Tracks which schema migrations ran so each versioned function executes exactly once.
+
 ## API Endpoints
 
 ### POST /api/username/claim
@@ -77,9 +88,8 @@ Claim a username and establish session.
 - Validates username availability
 - Generates session_id (JULID, UUIDv7-compatible)
 - Sets cookie: `session_id=<julid>; HttpOnly; Secure; SameSite=Strict; Path=/`
-- Inserts session into DB with locked=1
+- Inserts/updates row with `last_locked = now`
 - Returns remaining TTL so the frontend countdown can display auto-release timing
-- Updates `last_activity`
 
 ### POST /api/username/release
 
@@ -89,7 +99,7 @@ Manually release username and end session.
 
 **Side Effects**:
 
-- Sets locked=0 for current session
+- Sets `last_locked = 0` for current session
 - Clears session cookie (Max-Age=0)
 - Drops rate-limit entry for the released session_id
 - Closes SSE stream client-side
@@ -104,11 +114,11 @@ Send a message to the chat room.
 
 **Flow**:
 
-1. Validate session cookie exists and corresponds to a locked session
+1. Validate session cookie exists and session has not hit the TTL (`last_locked + timeout > now`)
 2. Enforce per-session rate limit (one message per second)
 3. Validate message: `length(trimmed(text)) <= 240` and non-empty
 4. Generate JULID/UUIDv7 for message ID
-5. Insert message into DB and update session `last_activity`
+5. Insert message into DB and update session `last_locked`
 6. Broadcast serialized message JSON to all SSE clients via the broadcast queue
 
 ### GET /api/messages
@@ -139,7 +149,7 @@ data: {"id":"string","username":"string","text":"string","created_at":1234567890
 
 **Keep-Alive**: Relies on EventSource automatic reconnection; no explicit ping events.
 
-**Disconnection Handling**: Session remains reserved until `SESSION_TIMEOUT_SECONDS` elapses without activity (determined by `last_activity`).
+**Disconnection Handling**: Session remains reserved until `SESSION_TIMEOUT_SECONDS` elapses without activity (determined by `last_locked`).
 
 ### GET /api/stats
 
@@ -150,6 +160,15 @@ Get global statistics.
 ### GET /
 
 Serve embedded Svelte application (index.html and assets).
+
+## Database Migration Strategy
+
+- On startup the backend enforces SQLite pragmas (WAL, busy timeout, foreign keys) and then runs a small migration harness.
+- A `migrations` table records applied versions; each numbered function runs only once and inserts a `(version, name)` row on success.
+- Current migrations:
+  1. `migrate_create_tables` – creates the original `sessions`/`messages` tables (with `locked` + `last_activity`) and supporting indexes.
+  2. `migrate_sessions_last_locked` – rebuilds the `sessions` table into the new `last_locked` shape and recreates indexes with foreign keys temporarily disabled to avoid FK references to the transitional table.
+- After all migrations complete, the server asserts that `sessions` exposes only the `last_locked` column to prevent running against a stale schema.
 
 ## User Flow
 
@@ -167,7 +186,7 @@ Serve embedded Svelte application (index.html and assets).
 1. User types message (max 240 chars)
 2. Client-side validation (trimmed length, non-empty)
 3. POST to `/api/messages`
-4. Server enforces rate-limit, validates, inserts to DB, updates session `last_activity`
+4. Server enforces rate-limit, validates, inserts to DB, updates session `last_locked`
 5. Successful POST resets the client countdown and clears any error status
 6. Server broadcasts to all SSE connections; every client inserts the message in sorted order
 
@@ -188,15 +207,15 @@ Serve embedded Svelte application (index.html and assets).
 
 1. User clicks logout button
 2. POST to `/api/username/release`
-3. Server sets locked=0, clears cookie
+3. Server sets `last_locked = 0`, clears cookie
 4. Frontend closes EventSource and returns to username prompt
 
 ### Automatic Session Timeout
 
 1. Countdown starts at `expires_in` seconds received from the claim response
-2. Each successful message resets the countdown and `last_activity`
+2. Each successful message resets the countdown and bumps `last_locked`
 3. When countdown reaches zero without activity, the frontend releases the username and closes SSE
-4. Subsequent claim attempts treat the stale session as expired because `last_activity + SESSION_TIMEOUT_SECONDS < now`
+4. Subsequent claim attempts treat the stale session as expired because `last_locked + SESSION_TIMEOUT_SECONDS < now`
 
 ## Message Validation
 
@@ -205,7 +224,7 @@ Serve embedded Svelte application (index.html and assets).
 - Message text after trim must be <= 240 characters
 - Message text after trim must be non-empty
 - Session cookie must be valid
-- Username must be locked (active session)
+- Session must still be within the TTL window (`last_locked` freshness)
 
 ### Client-Side (UX)
 
@@ -221,7 +240,7 @@ Serve embedded Svelte application (index.html and assets).
 - **Secure**: Cookie only sent over HTTPS in production
 - **SameSite=Strict**: CSRF protection
 - **Session IDs**: JULID (UUIDv7-compatible, cryptographically strong)
-- **Expiry**: `SESSION_TIMEOUT_SECONDS` enforced via `last_activity`
+- **Expiry**: `SESSION_TIMEOUT_SECONDS` enforced via `last_locked`
 
 ### XSS Protection
 

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use async_stream::stream;
 use futures_util::Stream;
 use include_dir::{Dir, include_dir};
@@ -23,6 +23,15 @@ type HttpResponse = warp::reply::Response;
 static DIST: Dir = include_dir!("front/dist");
 // static SESSION_TIMEOUT_SECONDS: i64 = 10 * 5; // 5 minutes
 static SESSION_TIMEOUT_SECONDS: i64 = 60; // 60 seconds (DEBUG)
+
+static MAX_MESSAGE_LENGTH: usize = 240;
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -230,13 +239,10 @@ async fn handle_claim(req: ClaimRequest, state: AppState) -> Result<HttpResponse
 
     let session_id = Julid::new();
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
+    let now = unix_now();
 
-    let existing = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT locked, last_activity FROM sessions WHERE username = ?",
+    let existing = sqlx::query_as::<_, (i64,)>(
+        "SELECT last_locked FROM sessions WHERE username = ?",
     )
     .bind(username)
     .fetch_optional(&state.db)
@@ -244,10 +250,10 @@ async fn handle_claim(req: ClaimRequest, state: AppState) -> Result<HttpResponse
     .map_err(|_| warp::reject::not_found())?;
 
     match existing {
-        Some((locked, last_activity)) => {
-            let is_expired = last_activity + SESSION_TIMEOUT_SECONDS < now;
+        Some((last_locked,)) => {
+            let is_locked = last_locked + SESSION_TIMEOUT_SECONDS > now;
 
-            if locked == 1 && !is_expired {
+            if is_locked {
                 return Ok(json_response(
                     StatusCode::CONFLICT,
                     &ErrorResponse {
@@ -255,7 +261,7 @@ async fn handle_claim(req: ClaimRequest, state: AppState) -> Result<HttpResponse
                     },
                 ));
             }
-            sqlx::query("UPDATE sessions SET session_id = ?, locked = 1, last_activity = ? WHERE username = ?")
+            sqlx::query("UPDATE sessions SET session_id = ?, last_locked = ? WHERE username = ?")
                 .bind(&session_id)
                 .bind(now)
                 .bind(username)
@@ -264,7 +270,9 @@ async fn handle_claim(req: ClaimRequest, state: AppState) -> Result<HttpResponse
                 .map_err(|_| warp::reject::not_found())?;
         }
         None => {
-            sqlx::query("INSERT INTO sessions (session_id, username, locked, last_activity) VALUES (?, ?, 1, ?)")
+            sqlx::query(
+                "INSERT INTO sessions (session_id, username, last_locked) VALUES (?, ?, ?)",
+            )
                 .bind(&session_id)
                 .bind(username)
                 .bind(now)
@@ -297,7 +305,7 @@ async fn handle_release(
 ) -> Result<HttpResponse, warp::Rejection> {
     if let Some(sid) = session_id {
         let rate_key = sid.to_string();
-        let _ = sqlx::query("UPDATE sessions SET locked = 0 WHERE session_id = ?")
+        let _ = sqlx::query("UPDATE sessions SET last_locked = 0 WHERE session_id = ?")
             .bind(sid)
             .execute(&state.db)
             .await;
@@ -353,7 +361,7 @@ async fn handle_post_message(
     }
 
     let text = req.text.trim();
-    if text.is_empty() || text.len() > 240 {
+    if text.is_empty() || text.len() > MAX_MESSAGE_LENGTH {
         return Ok(json_response(
             StatusCode::BAD_REQUEST,
             &ErrorResponse {
@@ -363,10 +371,7 @@ async fn handle_post_message(
     }
 
     let msg_id = Julid::new();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
+    let now = unix_now();
 
     sqlx::query("INSERT INTO messages (id, username, text, created_at) VALUES (?, ?, ?, ?)")
         .bind(&msg_id)
@@ -377,7 +382,7 @@ async fn handle_post_message(
         .await
         .map_err(|_| warp::reject::not_found())?;
 
-    let _ = sqlx::query("UPDATE sessions SET last_activity = ? WHERE session_id = ?")
+    let _ = sqlx::query("UPDATE sessions SET last_locked = ? WHERE session_id = ?")
         .bind(now)
         .bind(session_id)
         .execute(&state.db)
@@ -512,15 +517,22 @@ async fn handle_static(path: warp::path::Tail) -> Result<HttpResponse, warp::Rej
 }
 
 async fn get_username(state: &AppState, session_id: Julid) -> Option<String> {
-    sqlx::query_as::<_, (String,)>(
-        "SELECT username FROM sessions WHERE session_id = ? AND locked = 1",
+    let now = unix_now();
+    sqlx::query_as::<_, (String, i64)>(
+        "SELECT username, last_locked FROM sessions WHERE session_id = ?",
     )
     .bind(session_id)
     .fetch_optional(&state.db)
     .await
     .ok()
     .flatten()
-    .map(|(u,)| u)
+    .and_then(|(username, last_locked)| {
+        if last_locked + SESSION_TIMEOUT_SECONDS > now {
+            Some(username)
+        } else {
+            None
+        }
+    })
 }
 
 async fn init_db(db_url: &str) -> Result<SqlitePool> {
@@ -557,6 +569,59 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         .execute(pool)
         .await?;
 
+    ensure_migrations_table(pool).await?;
+
+    if !migration_applied(pool, 1).await? {
+        migrate_create_tables(pool).await?;
+        record_migration(pool, 1, "migrate_create_tables").await?;
+    }
+
+    if !migration_applied(pool, 2).await? {
+        migrate_sessions_last_locked(pool).await?;
+        record_migration(pool, 2, "migrate_sessions_last_locked").await?;
+    }
+
+    if !session_column_exists(pool, "last_locked").await?
+        || session_column_exists(pool, "locked").await?
+        || session_column_exists(pool, "last_activity").await?
+    {
+        bail!("sessions table failed to reach last_locked schema");
+    }
+
+    Ok(())
+}
+
+async fn ensure_migrations_table(pool: &SqlitePool) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at INTEGER NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn migration_applied(pool: &SqlitePool, version: i64) -> Result<bool> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM migrations WHERE version = ?;")
+        .bind(version)
+        .fetch_one(pool)
+        .await?;
+    Ok(count > 0)
+}
+
+async fn record_migration(pool: &SqlitePool, version: i64, name: &str) -> Result<()> {
+    sqlx::query("INSERT INTO migrations (version, name) VALUES (?, ?);")
+        .bind(version)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn migrate_create_tables(pool: &SqlitePool) -> Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS sessions (
             session_id BLOB NOT NULL PRIMARY KEY,
@@ -589,6 +654,106 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         .await?;
 
     Ok(())
+}
+
+async fn migrate_sessions_last_locked(pool: &SqlitePool) -> Result<()> {
+    let has_last_locked = session_column_exists(pool, "last_locked").await?;
+    let has_locked = session_column_exists(pool, "locked").await?;
+    let has_last_activity = session_column_exists(pool, "last_activity").await?;
+
+    if has_last_locked && !has_locked && !has_last_activity {
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions(username);")
+            .execute(pool)
+            .await?;
+        return Ok(());
+    }
+
+    let mut pooled = pool.acquire().await?;
+    let raw_conn = pooled.as_mut();
+    sqlx::query("PRAGMA foreign_keys = OFF;")
+        .execute(&mut *raw_conn)
+        .await?;
+    sqlx::query("BEGIN IMMEDIATE;")
+        .execute(&mut *raw_conn)
+        .await?;
+
+    let migrate = async {
+        sqlx::query(
+            "CREATE TABLE sessions_new (
+                session_id BLOB NOT NULL PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                last_locked INTEGER NOT NULL DEFAULT 0
+            ) STRICT;",
+        )
+        .execute(&mut *raw_conn)
+        .await?;
+
+        if has_last_locked {
+            sqlx::query(
+                "INSERT INTO sessions_new (session_id, username, last_locked)
+                 SELECT session_id, username, last_locked FROM sessions;",
+            )
+            .execute(&mut *raw_conn)
+            .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO sessions_new (session_id, username, last_locked)
+                 SELECT session_id,
+                        username,
+                        CASE WHEN locked = 1 THEN last_activity ELSE 0 END
+                 FROM sessions;",
+            )
+            .execute(&mut *raw_conn)
+            .await?;
+        }
+
+        sqlx::query("DROP TABLE sessions;")
+            .execute(&mut *raw_conn)
+            .await?;
+
+        sqlx::query("ALTER TABLE sessions_new RENAME TO sessions;")
+            .execute(&mut *raw_conn)
+            .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions(username);")
+            .execute(&mut *raw_conn)
+            .await?;
+
+        sqlx::query("PRAGMA foreign_keys = ON;")
+            .execute(&mut *raw_conn)
+            .await?;
+
+        Ok::<(), sqlx::Error>(())
+    }
+    .await;
+
+    match migrate {
+        Ok(_) => {
+            sqlx::query("COMMIT;")
+                .execute(&mut *raw_conn)
+                .await?;
+            Ok(())
+        }
+        Err(err) => {
+            let _ = sqlx::query("ROLLBACK;")
+                .execute(&mut *raw_conn)
+                .await;
+            let _ = sqlx::query("PRAGMA foreign_keys = ON;")
+                .execute(&mut *raw_conn)
+                .await;
+            Err(err.into())
+        }
+    }
+}
+
+async fn session_column_exists(pool: &SqlitePool, column: &str) -> Result<bool> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?;",
+    )
+    .bind(column)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
 }
 
 fn unauthorized() -> HttpResponse {
