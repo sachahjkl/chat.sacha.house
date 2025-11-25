@@ -1,0 +1,13 @@
+target/
+front/node_modules/
+front/dist/
+*.db
+*.db-shm
+*.db-wal
+.git/
+.gitignore
+.vscode/
+.idea/
+*.md
+requests.http
+

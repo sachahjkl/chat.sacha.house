@@ -1,8 +1,8 @@
-:root {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  line-height: 1.5;
-  color: #fff;
-  background: #000;
+@font-face {
+  font-family: "Fira Code";
+  src: url("./assets/FiraCode-Regular.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
 }
 
 *,
@@ -12,9 +12,12 @@
 }
 
 body {
+  font-family: "Fira Code", monospace;
+  line-height: 1.5;
+  color: #e0e0e0;
   margin: 0;
   min-height: 100vh;
-  background: #000;
+  background: #0a0a0a;
 }
 
 .app {
@@ -23,14 +26,14 @@ body {
   padding: 1.5rem;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 1.25rem;
 }
 
 section {
-  background: #000;
-  border: 1px solid #333;
+  background: #111;
+  border: 1px solid #2a2a2a;
   border-radius: 0;
-  padding: 1rem;
+  padding: 1.25rem;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
@@ -53,16 +56,23 @@ label {
 input,
 textarea {
   border-radius: 0;
-  border: 1px solid #333;
-  padding: 0.5rem;
+  border: 1px solid #2a2a2a;
+  padding: 0.625rem;
   font: inherit;
-  background: #000;
-  color: #fff;
+  background: #0a0a0a;
+  color: #e0e0e0;
+  transition: border-color 0.15s;
+}
+
+input:hover,
+textarea:hover {
+  border-color: #3a3a3a;
 }
 
 input:focus,
 textarea:focus {
-  outline: 1px solid #111;
+  outline: none;
+  border-color: #4a4a4a;
   color: #fff;
 }
 
@@ -74,16 +84,26 @@ textarea {
 button {
   align-self: flex-start;
   border-radius: 0;
-  border: 1px solid #333;
-  padding: 0.5rem 1rem;
+  border: 1px solid #2a2a2a;
+  padding: 0.625rem 1.25rem;
   font: inherit;
-  background: #000;
-  color: #fff;
+  background: #1a1a1a;
+  color: #e0e0e0;
   cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+button:hover:not(:disabled) {
+  background: #222;
+  border-color: #3a3a3a;
+}
+
+button:active:not(:disabled) {
+  background: #0f0f0f;
 }
 
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
@@ -98,21 +118,29 @@ button:disabled {
   justify-content: space-between;
   align-items: center;
   font-size: 0.85rem;
-  color: #fff;
+  color: #aaa;
+}
+
+.composer__meta span {
+  color: #888;
 }
 
 .status {
   margin: 0;
   font-size: 0.9rem;
-  /* bright red */
-  color: #aa0000;
+  color: #ff4444;
+  padding: 0.5rem;
+  background: #2a1111;
+  border: 1px solid #4a2222;
 }
 
 .claimed {
   margin: 0;
   font-size: 0.9rem;
-  /* bright green */
-  color: #00aa00;
+  color: #44ff44;
+  padding: 0.5rem;
+  background: #112a11;
+  border: 1px solid #224a22;
 }
 
 .history {
@@ -139,12 +167,19 @@ button:disabled {
 }
 
 .history li {
-  border: 1px solid #333;
+  border: 1px solid #2a2a2a;
   border-radius: 0;
-  padding: 0.5rem;
+  padding: 0.75rem;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.375rem;
+  background: #0a0a0a;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.history li:hover {
+  border-color: #3a3a3a;
+  background: #0f0f0f;
 }
 
 .history li header {
@@ -152,35 +187,58 @@ button:disabled {
   justify-content: space-between;
   align-items: center;
   font-size: 0.85rem;
-  color: #fff;
+  color: #aaa;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid #1a1a1a;
 }
 
 .history li strong {
   color: #fff;
+  font-weight: 600;
+}
+
+.history li time {
+  color: #666;
+  font-size: 0.8rem;
 }
 
 .history li p {
   margin: 0;
+  color: #d0d0d0;
+  line-height: 1.6;
 }
 
 .empty {
   margin: 0;
-  color: #fff;
+  color: #666;
   font-style: italic;
+  text-align: center;
+  padding: 2rem;
+}
+
+.history__header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.history__header button {
+  font-size: 0.85rem;
+  padding: 0.5rem 1rem;
 }
 
 .title {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans",
-    "Helvetica Neue", sans-serif;
-  background: #000;
-  /* bright green */
-  color: #00aa00;
-  padding: 0.5rem 1rem;
-  border-radius: 0.5rem;
+  background: #0a0a0a;
+  color: #44ff44;
+  padding: 0.75rem 1.25rem;
+  border-radius: 0;
   font-size: 1.5rem;
-  font-weight: bold;
+  font-weight: 700;
   text-align: center;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.15em;
   margin: 0;
+  border: 1px solid #224a22;
+  text-shadow: 0 0 8px rgba(68, 255, 68, 0.3);
 }

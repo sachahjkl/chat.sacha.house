@@ -8,7 +8,7 @@ use serde_json::json;
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 use std::{
     collections::HashMap,
-    convert::Infallible,
+    convert::{Infallible, TryInto},
     fs,
     path::Path,
     sync::Arc,
@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
     }
     pretty_env_logger::init();
 
-    let db_url = "sqlite:chat.db?mode=rwc";
+    let db_url = "sqlite:db/chat.db?mode=rwc";
     let db = init_db(db_url).await?;
 
     let (tx, _rx) = broadcast::channel(100);
@@ -161,9 +161,22 @@ async fn main() -> Result<()> {
         ])
         .allow_methods(&[Method::GET, Method::POST, Method::OPTIONS]);
 
-    log::info!("Server starting on http://127.0.0.1:3030");
+    let bind_host = std::env::var("BIND_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let bind_port: u16 = std::env::var("BIND_PORT")
+        .unwrap_or_else(|_| "3030".to_string())
+        .parse()
+        .unwrap_or(3030);
+    
+    let bind_addr: [u8; 4] = bind_host
+        .split('.')
+        .map(|s| s.parse().unwrap_or(127))
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap_or([127, 0, 0, 1]);
+    
+    log::info!("Server starting on http://{}:{}", bind_host, bind_port);
     warp::serve(routes.with(cors))
-        .run(([127, 0, 0, 1], 3030))
+        .run((bind_addr, bind_port))
         .await;
 
     Ok(())
