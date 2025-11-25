@@ -23,6 +23,11 @@ cargo run
 
 Server starts on `http://127.0.0.1:3030` (configurable via `BIND_HOST` and `BIND_PORT` env vars).
 
+Environment variables:
+- `BIND_HOST`: Server bind address (default: `127.0.0.1`)
+- `BIND_PORT`: Server port (default: `3030`)
+- `RATE_LIMIT_SECS`: Rate limit window in seconds for message sending (default: `1`)
+
 ## Docker
 
 ```bash

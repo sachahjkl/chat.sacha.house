@@ -70,6 +70,12 @@ struct ClaimResponse {
 }
 
 #[derive(Serialize)]
+struct CurrentUsernameResponse {
+    username: Option<String>,
+    expires_in: Option<i64>,
+}
+
+#[derive(Serialize)]
 struct ErrorResponse {
     error: String,
 }
@@ -97,23 +103,33 @@ struct GetMessagesResponse {
 }
 
 impl AppState {
-    async fn check_rate_limit(&self, session_id: &Julid) -> bool {
+    async fn check_rate_limit(&self, session_id: &Julid, action: &str) -> bool {
         if self.rate_limit_window.is_zero() {
             return true;
         }
         let now = Instant::now();
         let mut guard = self.rate_limiter.lock().await;
-        let entry = guard.entry(session_id.to_string()).or_insert_with(|| now);
-        if now.duration_since(*entry) < self.rate_limit_window {
-            return false;
+        let key = format!("{}:{}", action, session_id);
+        match guard.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if now.duration_since(*entry.get()) < self.rate_limit_window {
+                    return false;
+                }
+                entry.insert(now);
+                true
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(now);
+                true
+            }
+            
         }
-        *entry = now;
-        true
     }
 
-    async fn clear_rate_limit_key(&self, key: &str) {
+    async fn clear_rate_limit_key(&self, session_id: &str) {
         let mut guard = self.rate_limiter.lock().await;
-        guard.remove(key);
+        guard.remove(&format!("message:{}", session_id));
+        guard.remove(&format!("claim:{}", session_id));
     }
 }
 
@@ -131,11 +147,16 @@ async fn main() -> Result<()> {
 
     let (tx, _rx) = broadcast::channel(100);
 
+    let rate_limit_secs = std::env::var("RATE_LIMIT_SECS")
+        .unwrap_or_else(|_| "1".to_string())
+        .parse::<u64>()
+        .unwrap_or(1);
+
     let state = AppState {
         db,
         tx,
         rate_limiter: Arc::new(Mutex::new(HashMap::new())),
-        rate_limit_window: Duration::from_secs(1),
+        rate_limit_window: Duration::from_secs(rate_limit_secs),
     };
     let routes = build_routes(state);
 
@@ -166,14 +187,14 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "3030".to_string())
         .parse()
         .unwrap_or(3030);
-    
+
     let bind_addr: [u8; 4] = bind_host
         .split('.')
         .map(|s| s.parse().unwrap_or(127))
         .collect::<Vec<_>>()
         .try_into()
         .unwrap_or([127, 0, 0, 1]);
-    
+
     log::info!("Server starting on http://{}:{}", bind_host, bind_port);
     warp::serve(routes.with(cors))
         .run((bind_addr, bind_port))
@@ -190,6 +211,12 @@ fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
         .and(warp::body::json())
         .and(state_filter.clone())
         .and_then(handle_claim);
+
+    let get_current_username_route = warp::get()
+        .and(warp::path!("api" / "username" / "current"))
+        .and(warp::cookie::optional("session_id"))
+        .and(state_filter.clone())
+        .and_then(handle_get_current_username);
 
     let release_route = warp::post()
         .and(warp::path!("api" / "username" / "release"))
@@ -224,6 +251,8 @@ fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
     let static_files = warp::get().and(warp::path::tail()).and_then(handle_static);
 
     claim_route
+        .or(get_current_username_route)
+        .unify()
         .or(release_route)
         .unify()
         .or(post_message_route)
@@ -254,13 +283,12 @@ async fn handle_claim(req: ClaimRequest, state: AppState) -> Result<HttpResponse
 
     let now = unix_now();
 
-    let existing = sqlx::query_as::<_, (i64,)>(
-        "SELECT last_locked FROM sessions WHERE username = ?",
-    )
-    .bind(username)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| warp::reject::not_found())?;
+    let existing =
+        sqlx::query_as::<_, (i64,)>("SELECT last_locked FROM sessions WHERE username = ?")
+            .bind(username)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|_| warp::reject::not_found())?;
 
     match existing {
         Some((last_locked,)) => {
@@ -286,12 +314,12 @@ async fn handle_claim(req: ClaimRequest, state: AppState) -> Result<HttpResponse
             sqlx::query(
                 "INSERT INTO sessions (session_id, username, last_locked) VALUES (?, ?, ?)",
             )
-                .bind(&session_id)
-                .bind(username)
-                .bind(now)
-                .execute(&state.db)
-                .await
-                .map_err(|_| warp::reject::not_found())?;
+            .bind(&session_id)
+            .bind(username)
+            .bind(now)
+            .execute(&state.db)
+            .await
+            .map_err(|_| warp::reject::not_found())?;
         }
     }
 
@@ -310,6 +338,39 @@ async fn handle_claim(req: ClaimRequest, state: AppState) -> Result<HttpResponse
         warp::reply::with_header(warp::reply::json(&response), "Set-Cookie", cookie)
             .into_response(),
     )
+}
+
+async fn handle_get_current_username(
+    session_id: Option<Julid>,
+    state: AppState,
+) -> Result<HttpResponse, warp::Rejection> {
+    if let Some(sid) = session_id {
+        if let Some(username) = get_username(&state, sid).await {
+            let now = unix_now();
+            let (last_locked,): (i64,) = sqlx::query_as::<_, (i64,)>(
+                "SELECT last_locked FROM sessions WHERE session_id = ?",
+            )
+            .bind(sid)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|_| warp::reject::not_found())?;
+
+            let remaining = (last_locked + SESSION_TIMEOUT_SECONDS) - now;
+            let expires_in = if remaining > 0 { Some(remaining) } else { None };
+
+            return Ok(warp::reply::json(&CurrentUsernameResponse {
+                username: Some(username),
+                expires_in,
+            })
+            .into_response());
+        }
+    }
+
+    Ok(warp::reply::json(&CurrentUsernameResponse {
+        username: None,
+        expires_in: None,
+    })
+    .into_response())
 }
 
 async fn handle_release(
@@ -364,7 +425,7 @@ async fn handle_post_message(
         }
     };
 
-    if !state.check_rate_limit(&session_id).await {
+    if !state.check_rate_limit(&session_id, "message").await {
         return Ok(json_response(
             StatusCode::TOO_MANY_REQUESTS,
             &ErrorResponse {
@@ -742,15 +803,11 @@ async fn migrate_sessions_last_locked(pool: &SqlitePool) -> Result<()> {
 
     match migrate {
         Ok(_) => {
-            sqlx::query("COMMIT;")
-                .execute(&mut *raw_conn)
-                .await?;
+            sqlx::query("COMMIT;").execute(&mut *raw_conn).await?;
             Ok(())
         }
         Err(err) => {
-            let _ = sqlx::query("ROLLBACK;")
-                .execute(&mut *raw_conn)
-                .await;
+            let _ = sqlx::query("ROLLBACK;").execute(&mut *raw_conn).await;
             let _ = sqlx::query("PRAGMA foreign_keys = ON;")
                 .execute(&mut *raw_conn)
                 .await;
@@ -760,12 +817,11 @@ async fn migrate_sessions_last_locked(pool: &SqlitePool) -> Result<()> {
 }
 
 async fn session_column_exists(pool: &SqlitePool, column: &str) -> Result<bool> {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?;",
-    )
-    .bind(column)
-    .fetch_one(pool)
-    .await?;
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?;")
+            .bind(column)
+            .fetch_one(pool)
+            .await?;
     Ok(count > 0)
 }
 

@@ -26,6 +26,7 @@
 
   onMount(() => {
     loadMessages();
+    restoreUsername();
     return () => {
       stopCountdown();
       eventSource?.close();
@@ -60,6 +61,28 @@
       claimed = false;
     } finally {
       claiming = false;
+    }
+  }
+
+  async function restoreUsername() {
+    try {
+      const res = await fetch(apiUrl("/api/username/current"), {
+        credentials: "include",
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.username) {
+        username = data.username;
+        claimed = true;
+        const expiresIn = normalizeSeconds(data?.expires_in);
+        if (expiresIn > 0) {
+          sessionDuration = expiresIn;
+          startCountdown(expiresIn);
+          startStream();
+        }
+      }
+    } catch (err) {
+      // Silently fail - no username to restore
     }
   }
 
