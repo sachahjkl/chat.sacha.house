@@ -20,5 +20,8 @@
   },
   "overrides": {
     "vite": "npm:rolldown-vite@7.2.5"
+  },
+  "dependencies": {
+    "runed": "^0.36.0"
   }
 }

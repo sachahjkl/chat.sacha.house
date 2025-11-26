@@ -29,7 +29,7 @@ Single global chat room web application with no authentication. Users pick a use
 
 - **Framework**: Svelte 5 SPA (runed state) living in `front/`
 - **Build**: Bun + Vite + Svelte; dist embedded via include_dir
-- **Real-Time**: EventSource API talking to `/api/sse`
+- **Real-Time**: EventSource API talking to `/api/messages/sse`
 - **History Rendering**: Simple list view kept sorted newest-first via JULID comparisons
 - **XSS Protection**: Render message text as plain text only
 
@@ -134,7 +134,7 @@ Retrieve message history with pagination.
 
 Returns messages ordered by UUIDv7 ID descending (newest first).
 
-### GET /api/sse
+### GET /api/messages/sse
 
 Server-Sent Events stream for real-time messages.
 
@@ -178,7 +178,7 @@ Serve embedded Svelte application (index.html and assets).
 2. Frontend prompts for username and POSTs to `/api/username/claim`
 3. Server validates availability, generates JULID, sets cookie, returns TTL
 4. Frontend immediately fetches `/api/messages` for the latest history
-5. Frontend establishes EventSource to `/api/sse`
+5. Frontend establishes EventSource to `/api/messages/sse`
 6. Countdown indicator starts and reflects auto-release timing
 
 ### Sending Messages

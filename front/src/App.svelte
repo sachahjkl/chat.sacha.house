@@ -1,12 +1,12 @@
 <script lang="ts">
+  import { ScrollState } from "runed";
   import { onDestroy, onMount } from "svelte";
-
-  type Message = {
-    id: string;
-    username: string;
-    text: string;
-    created_at: number;
-  };
+  import Composer from "./lib/components/Composer.svelte";
+  import MessageList from "./lib/components/MessageList.svelte";
+  import Snackbar from "./lib/components/Snackbar.svelte";
+  import UsernameClaim from "./lib/components/UsernameClaim.svelte";
+  import { notifications } from "./lib/stores/notifications";
+  import type { Message } from "./lib/types";
 
   const API_BASE = (import.meta.env.VITE_API_BASE ?? "") as string;
 
@@ -18,7 +18,6 @@
   let messageText = $state("");
   let messages = $state<Message[]>([]);
   const messageIds = new Set<string>();
-  let status = $state<string | null>(null);
   let eventSource = $state<EventSource | null>(null);
   let sessionDuration = $state(0);
   let remainingSeconds = $state<number | null>(null);
@@ -28,6 +27,10 @@
   let usersEventSource = $state<EventSource | null>(null);
   let totalMessages = $state(0);
   let statsRefreshHandle: ReturnType<typeof setInterval> | null = null;
+  let windowElement = $state<HTMLElement>();
+  const scroll = new ScrollState({
+    element: () => window,
+  });
 
   const SETTINGS_KEY = "chat.sacha.house.settings";
   const STATS_REFRESH_INTERVAL_MS = 20000;
@@ -102,17 +105,18 @@
     };
   });
 
-  async function claimUsername(event: SubmitEvent) {
-    event.preventDefault();
-    if (!username.trim()) return;
+  async function handleClaim({usernameInput, silent = false}: {usernameInput: string, silent?: boolean}) {
+    if (!usernameInput.trim()) return;
     claiming = true;
-    status = "Claiming username…";
+    if (!silent) {
+      notifications.showNotification("Claiming username…", "info");
+    }
     try {
       const res = await fetch(apiUrl("/api/username/claim"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ username: username.trim() }),
+        body: JSON.stringify({ username: usernameInput.trim() }),
       });
       if (!res.ok) {
         const err = await safeJson(res);
@@ -121,13 +125,15 @@
       const data = await res.json();
       sessionDuration = normalizeSeconds(data?.expires_in);
       claimed = true;
-      status = "Username locked in.";
+      username = usernameInput.trim();
       startCountdown(sessionDuration);
       await loadMessages();
       startStream();
       startUsersStream();
     } catch (err) {
-      status = err instanceof Error ? err.message : "Claim failed";
+      if (!silent) {
+        notifications.showNotification(err instanceof Error ? err.message : "Claim failed", "error");
+      }
       claimed = false;
     } finally {
       claiming = false;
@@ -202,35 +208,32 @@
         insertMessage(msg);
       }
     } catch (err) {
-      status = err instanceof Error ? err.message : "Unable to load messages";
+      notifications.showNotification(err instanceof Error ? err.message : "Unable to load messages", "error");
     }
   }
 
-  async function sendMessage(event?: Event) {
-    event?.preventDefault();
-    if (!messageText.trim()) return;
+  async function handleSendMessage(text: string) {
+    if (!text.trim()) return;
     try {
       const res = await fetch(apiUrl("/api/messages"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ text: messageText.trim() }),
+        body: JSON.stringify({ text: text.trim() }),
       });
       if (!res.ok) {
         const err = await safeJson(res);
         throw new Error(err?.error ?? "Failed to send message");
       }
-      messageText = "";
-      status = null;
       if (sessionDuration > 0) {
         startCountdown(sessionDuration);
       }
     } catch (err) {
-      status = err instanceof Error ? err.message : "Failed to send message";
+      notifications.showNotification(err instanceof Error ? err.message : "Failed to send message", "error");
     }
   }
 
-  async function releaseUsername() {
+  async function handleRelease() {
     try {
       const res = await fetch(apiUrl("/api/username/release"), {
         method: "POST",
@@ -240,9 +243,9 @@
         const err = await safeJson(res);
         throw new Error(err?.error ?? "Release failed");
       }
-      status = "Username released.";
+      notifications.showNotification("Username released.", "success");
     } catch (err) {
-      status = err instanceof Error ? err.message : "Release failed";
+      notifications.showNotification(err instanceof Error ? err.message : "Release failed", "error");
     } finally {
       claimed = false;
       sessionDuration = 0;
@@ -263,7 +266,7 @@
       }
     });
     eventSource.addEventListener("error", () => {
-      status = "Connection dropped. Reconnecting…";
+      notifications.showNotification("Connection dropped. Reconnecting…", "info");
     });
   }
 
@@ -302,11 +305,9 @@
     }
   }
 
-  function handleComposerKey(event: KeyboardEvent) {
-    if (event.key === "Enter" && event.ctrlKey) {
-      event.preventDefault();
-      sendMessage();
-    }
+  function handleToggleAutoReclaim(enabled: boolean) {
+    autoReclaimEnabled = enabled;
+    saveSettings();
   }
 
   function normalizeSeconds(value: unknown): number {
@@ -331,14 +332,14 @@
       remainingSeconds = Math.max(0, remainingSeconds - 1);
       if (remainingSeconds === RECLAIM_TRIGGER_SECONDS && autoReclaimEnabled && claimed && !autoReclaimTriggered) {
         autoReclaimTriggered = true;
-        claimUsername(new Event("submit") as SubmitEvent);
+        handleClaim({ usernameInput: username, silent: true });
       }
       if (remainingSeconds === 0) {
         stopCountdown();
         claimed = false;
         sessionDuration = 0;
         eventSource?.close();
-        status = "Username auto released.";
+        notifications.showNotification("Username auto released.", "info");
       }
     }, 1000);
   }
@@ -351,6 +352,10 @@
     remainingSeconds = null;
   }
 
+  function scrollToTop() {
+    scroll.scrollToTop();
+  }
+
   onDestroy(() => {
     stopCountdown();
     eventSource?.close();
@@ -358,77 +363,166 @@
 </script>
 
 <main class="app">
+  <h1 class="title">
+    <!-- svelte-ignore a11y_distracting_elements -->
+    <marquee class="marquee" direction="left">GL0BALLY_AVAILA8LE_CH4T_R00M </marquee>
+  </h1>
+
   <section class="panel">
-    <h1 class="title">
-      <marquee class="marquee" direction="left">GL0BALLY_AVAILA8LE_CH4T_R00M </marquee>
-    </h1>
-    <form class="claim" onsubmit={claimUsername}>
-      <label>
-        Username
-        <input placeholder="pick something short" bind:value={username} disabled={claiming || claimed} />
-      </label>
-      {#if !claimed}
-        <button type="submit" disabled={claiming || !username.trim()}>
-          {claiming ? "Claiming…" : "Claim username"}
-        </button>
-      {:else}
-        <div class="input-group">
-          <button type="button" onclick={releaseUsername}>
-            {autoReclaimEnabled ? "Auto-reclaim" : "Auto-release"}
-            {#if remainingSeconds !== null}
-              (auto {autoReclaimEnabled ? "reclaim" : "release"} in {remainingSeconds}s){/if}
-          </button>
-          <label class="toggle">
-            <input type="checkbox" bind:checked={autoReclaimEnabled} onchange={saveSettings} />
-            <span class="toggle__slider"></span>
-            <span class="toggle__label">Auto-reclaim</span>
-          </label>
-        </div>
-        <p class="claimed">✅ {username} locked for this session.</p>
-      {/if}
-    </form>
-
-    <form class="composer" onsubmit={sendMessage}>
-      <textarea
-        placeholder={claimed ? "Say something nice" : "Claim a username first"}
-        bind:value={messageText}
-        maxlength={240}
-        disabled={!claimed}
-        onkeydown={handleComposerKey}
-      ></textarea>
-      <div class="composer__meta">
-        <span>{messageText.trim().length}/240</span>
-        <button type="submit" disabled={!claimed || !messageText.trim()}>Send</button>
-      </div>
-    </form>
-
-    {#if status}
-      <p class="status">{status}</p>
-    {/if}
+    <UsernameClaim
+      bind:username
+      {claimed}
+      {claiming}
+      bind:autoReclaimEnabled
+      {remainingSeconds}
+      onClaim={(usernameInput) => handleClaim({ usernameInput })}
+      onRelease={handleRelease}
+      onToggleAutoReclaim={handleToggleAutoReclaim}
+    />
   </section>
 
   <section class="history">
     <header class="history__header">
-      <h2>Messages</h2>
-      <button type="button" onclick={loadMessages}>Refresh</button>
+      <span class="history__count">{totalMessages} MESSAGES</span>
+      <button 
+      class="refresh-button"
+      aria-label="Refresh messages" 
+      title="Refresh messages" type="button" onclick={loadMessages}
+        >Refresh</button
+      >
     </header>
-    {#if messages.length === 0}
-      <p class="empty">No messages yet.</p>
-    {:else}
-      <ul>
-        {#each messages as message (message.id)}
-          <li>
-            <header>
-              <strong>
-                {message.username}
-                <span class="badge" class:active={activeUsers.has(message.username)}></span>
-              </strong>
-              <time>{new Date(message.created_at * 1000).toLocaleTimeString()}</time>
-            </header>
-            <p>{message.text}</p>
-          </li>
-        {/each}
-      </ul>
-    {/if}
+    <MessageList {messages} {activeUsers} />
   </section>
+
+  <section class="panel">
+    <Composer
+      {claimed}
+      bind:messageText
+      onSubmit={handleSendMessage}
+      showScrollToTop={scroll.y > 0}
+      onScrollToTop={scrollToTop}
+    />
+  </section>
+
+  <Snackbar />
 </main>
+
+<style>
+  .app {
+    margin: 0 auto;
+    max-width: 960px;
+    padding: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    gap: 0.75rem;
+  }
+
+  @media (min-width: 768px) {
+    .app {
+      padding: 1rem;
+      gap: 1rem;
+    }
+  }
+
+  section {
+    background: #111;
+    border: 1px solid #2a2a2a;
+    border-radius: 0;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+
+
+  .panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    position: sticky;
+    bottom: 0;
+  }
+
+  .history {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    flex: 1;
+    overflow-y: auto;
+  }
+
+  .history__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .history__count {
+    font-size: 0.85rem;
+    color: #aaa;
+    font-weight: 600;
+  }
+
+  .history__header button {
+    font-size: 0.85rem;
+    padding: 0.5rem 1rem;
+  }
+
+  .title {
+    background: #0a0a0a;
+    color: #44ff44;
+    padding: 0.25rem 0;
+    border-radius: 0;
+    font-size: 1.25rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    margin: 0;
+    border: 1px solid #224a22;
+    text-shadow: 0 0 8px rgba(68, 255, 68, 0.3);
+    overflow: hidden;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  @media (min-width: 768px) {
+    .title {
+      font-size: 1.5rem;
+    }
+  }
+
+  .title .marquee {
+    display: inline-block;
+  }
+
+  
+.refresh-button {
+  align-self: flex-start;
+  border-radius: 0;
+  border: 1px solid #2a2a2a;
+  padding: 0.625rem 1.25rem;
+  font: inherit;
+  background: #1a1a1a;
+  color: #e0e0e0;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.refresh-button:hover:not(:disabled) {
+  background: #222;
+  border-color: #3a3a3a;
+}
+
+.refresh-button:active:not(:disabled) {
+  background: #0f0f0f;
+}
+
+.refresh-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+</style>
