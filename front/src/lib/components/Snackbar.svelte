@@ -3,6 +3,12 @@
   import { notifications } from "../stores/notifications";
   import type { Notification } from "../types";
 
+  interface Props {
+    position?: "top" | "bottom";
+  }
+
+  let { position = "bottom" }: Props = $props();
+
   const SNACKBAR_DURATION_MS = 5000;
 
   let notificationList = $state<Notification[]>([]);
@@ -34,7 +40,7 @@
   }
 </script>
 
-<div class="snackbar-container">
+<div class="snackbar-container" class:top={position === "top"} class:bottom={position === "bottom"}>
   {#each notificationList as notification (notification.id)}
     <button
       type="button"
@@ -60,26 +66,34 @@
 <style>
   .snackbar-container {
     position: fixed;
-    bottom: 0;
     left: 0;
     right: 0;
     display: flex;
-    flex-direction: column;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.5rem;
-    padding-bottom: calc(0.5rem + 140px);
     pointer-events: none;
     z-index: 1000;
     max-width: 960px;
-    padding: 0.5rem;
     margin: 0 auto;
+  }
+
+  .snackbar-container.bottom {
+    bottom: 0;
+    flex-direction: column-reverse;
+    padding: 0.5rem;
+  }
+
+  .snackbar-container.top {
+    top: 0;
+    flex-direction: column;
+    padding: 0.5rem;
   }
 
   @media (min-width: 768px) {
     .snackbar-container {
       padding: 1rem;
     }
+
   }
 
   .snackbar {

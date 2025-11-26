@@ -28,6 +28,8 @@
   let totalMessages = $state(0);
   let statsRefreshHandle: ReturnType<typeof setInterval> | null = null;
   let windowElement = $state<HTMLElement>();
+  let composerPanel = $state<HTMLElement>();
+  let viewportOffset = $state(0);
   const scroll = new ScrollState({
     element: () => window,
   });
@@ -97,15 +99,33 @@
     fetchActiveUsers();
     startUsersStream();
     startStatsRefresh();
+
+    function handleViewportChange() {
+      if (!window.visualViewport) return;
+      const viewport = window.visualViewport;
+      const keyboardHeight = window.innerHeight - viewport.height;
+      viewportOffset = keyboardHeight > 0 ? -keyboardHeight : 0;
+    }
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", handleViewportChange);
+      window.visualViewport.addEventListener("scroll", handleViewportChange);
+      handleViewportChange();
+    }
+
     return () => {
       stopCountdown();
       stopStatsRefresh();
       eventSource?.close();
       usersEventSource?.close();
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", handleViewportChange);
+        window.visualViewport.removeEventListener("scroll", handleViewportChange);
+      }
     };
   });
 
-  async function handleClaim({usernameInput, silent = false}: {usernameInput: string, silent?: boolean}) {
+  async function handleClaim({ usernameInput, silent = false }: { usernameInput: string; silent?: boolean }) {
     if (!usernameInput.trim()) return;
     claiming = true;
     if (!silent) {
@@ -362,67 +382,80 @@
   });
 </script>
 
-<main class="app">
-  <h1 class="title">
-    <!-- svelte-ignore a11y_distracting_elements -->
-    <marquee class="marquee" direction="left">GL0BALLY_AVAILA8LE_CH4T_R00M </marquee>
-  </h1>
+<div class="app">
+  <header class="header">
+    <h1 class="title">
+      <!-- svelte-ignore a11y_distracting_elements -->
+      <marquee class="marquee" direction="left">GL0BALLY_AVAILA8LE_CH4T_R00M </marquee>
+    </h1>
+  </header>
 
-  <section class="panel">
-    <UsernameClaim
-      bind:username
-      {claimed}
-      {claiming}
-      bind:autoReclaimEnabled
-      {remainingSeconds}
-      onClaim={(usernameInput) => handleClaim({ usernameInput })}
-      onRelease={handleRelease}
-      onToggleAutoReclaim={handleToggleAutoReclaim}
-    />
-  </section>
+  <main class="main">
+    <section class="panel">
+      <UsernameClaim
+        bind:username
+        {claimed}
+        {claiming}
+        bind:autoReclaimEnabled
+        {remainingSeconds}
+        onClaim={(usernameInput) => handleClaim({ usernameInput })}
+        onRelease={handleRelease}
+        onToggleAutoReclaim={handleToggleAutoReclaim}
+      />
+    </section>
 
-  <section class="history">
-    <header class="history__header">
-      <span class="history__count">{totalMessages} MESSAGES</span>
-      <button 
-      class="refresh-button"
-      aria-label="Refresh messages" 
-      title="Refresh messages" type="button" onclick={loadMessages}
-        >Refresh</button
-      >
-    </header>
-    <MessageList {messages} {activeUsers} />
-  </section>
+    <section class="history">
+      <header class="history__header">
+        <span class="history__count">{totalMessages} MESSAGES</span>
+        <button
+          class="refresh-button"
+          aria-label="Refresh messages"
+          title="Refresh messages"
+          type="button"
+          onclick={loadMessages}>Refresh</button
+        >
+      </header>
+      <MessageList {messages} {activeUsers} />
+    </section>
 
-  <section class="panel">
-    <Composer
-      {claimed}
-      bind:messageText
-      onSubmit={handleSendMessage}
-      showScrollToTop={scroll.y > 0}
-      onScrollToTop={scrollToTop}
-    />
-  </section>
-
-  <Snackbar />
-</main>
+    <section
+      class="panel"
+      bind:this={composerPanel}
+      style:transform={viewportOffset !== 0 ? `translateY(${viewportOffset}px)` : undefined}
+    >
+      <Composer
+        {claimed}
+        bind:messageText
+        onSubmit={handleSendMessage}
+        showScrollToTop={scroll.y > 0}
+        onScrollToTop={scrollToTop}
+      />
+    </section>
+  </main>
+  <Snackbar position="bottom" />
+</div>
 
 <style>
   .app {
     margin: 0 auto;
     max-width: 960px;
     padding: 0.5rem;
+  }
+  @media (min-width: 768px) {
+    .app {
+      padding: 1rem;
+    }
+  }
+
+  .header {
+    margin-bottom: 0.5rem;
+  }
+
+  .main {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
     gap: 0.75rem;
-  }
-
-  @media (min-width: 768px) {
-    .app {
-      padding: 1rem;
-      gap: 1rem;
-    }
   }
 
   section {
@@ -435,14 +468,13 @@
     gap: 0.5rem;
   }
 
-
-
   .panel {
     display: flex;
     flex-direction: column;
     gap: 10px;
     position: sticky;
     bottom: 0;
+    transition: transform 0.2s ease-out;
   }
 
   .history {
@@ -499,30 +531,31 @@
     display: inline-block;
   }
 
-  
-.refresh-button {
-  align-self: flex-start;
-  border-radius: 0;
-  border: 1px solid #2a2a2a;
-  padding: 0.625rem 1.25rem;
-  font: inherit;
-  background: #1a1a1a;
-  color: #e0e0e0;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-}
+  .refresh-button {
+    align-self: flex-start;
+    border-radius: 0;
+    border: 1px solid #2a2a2a;
+    padding: 0.625rem 1.25rem;
+    font: inherit;
+    background: #1a1a1a;
+    color: #e0e0e0;
+    cursor: pointer;
+    transition:
+      background 0.15s,
+      border-color 0.15s;
+  }
 
-.refresh-button:hover:not(:disabled) {
-  background: #222;
-  border-color: #3a3a3a;
-}
+  .refresh-button:hover:not(:disabled) {
+    background: #222;
+    border-color: #3a3a3a;
+  }
 
-.refresh-button:active:not(:disabled) {
-  background: #0f0f0f;
-}
+  .refresh-button:active:not(:disabled) {
+    background: #0f0f0f;
+  }
 
-.refresh-button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
+  .refresh-button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
 </style>

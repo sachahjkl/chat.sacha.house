@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { TextareaAutosize } from "runed";
   import { fly } from "svelte/transition";
 
   interface Props {
@@ -9,7 +10,16 @@
     onScrollToTop: () => void;
   }
 
+  const MAX_MESSAGE_LENGTH = 240;
+
   let { claimed, messageText = $bindable(), onSubmit, showScrollToTop, onScrollToTop }: Props = $props();
+
+  let textarea = $state<HTMLTextAreaElement>(null!);
+  new TextareaAutosize({
+    element: () => textarea,
+    input: () => messageText,
+    maxHeight: 120,
+  });
 
   function handleComposerKey(event: KeyboardEvent) {
     if (event.key === "Enter" && event.ctrlKey) {
@@ -28,10 +38,12 @@
 
 <form class="composer" onsubmit={handleSubmit}>
   <textarea
+    bind:this={textarea}
     placeholder={claimed ? "Say something nice" : "Claim a username first"}
     bind:value={messageText}
-    maxlength={240}
+    maxlength={MAX_MESSAGE_LENGTH}
     disabled={!claimed}
+    name="message-text"
     onkeydown={handleComposerKey}
   ></textarea>
   <div class="composer__meta">
@@ -71,8 +83,8 @@
     background: #0a0a0a;
     color: #e0e0e0;
     transition: border-color 0.15s;
-    min-height: 120px;
-    resize: vertical;
+    overflow-y: hidden;
+    resize: none;
   }
 
   textarea:hover {
