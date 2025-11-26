@@ -37,6 +37,7 @@ fn unix_now() -> i64 {
 struct AppState {
     db: SqlitePool,
     tx: broadcast::Sender<Message>,
+    users_tx: broadcast::Sender<UserEvent>,
     rate_limiter: Arc<Mutex<HashMap<String, Instant>>>,
     rate_limit_window: Duration,
 }
@@ -47,6 +48,12 @@ struct Message {
     username: String,
     text: String,
     created_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct UserEvent {
+    action: String, // "ADD" or "REMOVE"
+    username: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -146,6 +153,7 @@ async fn main() -> Result<()> {
     let db = init_db(db_url).await?;
 
     let (tx, _rx) = broadcast::channel(100);
+    let (users_tx, _users_rx) = broadcast::channel(100);
 
     let rate_limit_secs = std::env::var("RATE_LIMIT_SECS")
         .unwrap_or_else(|_| "1".to_string())
@@ -153,12 +161,43 @@ async fn main() -> Result<()> {
         .unwrap_or(1);
 
     let state = AppState {
-        db,
+        db: db.clone(),
         tx,
+        users_tx: users_tx.clone(),
         rate_limiter: Arc::new(Mutex::new(HashMap::new())),
         rate_limit_window: Duration::from_secs(rate_limit_secs),
     };
-    let routes = build_routes(state);
+    let routes = build_routes(state.clone());
+
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let now = unix_now();
+                if let Ok(expired) = sqlx::query_as::<_, (String,)>(
+                    "SELECT username FROM sessions WHERE last_locked + ? <= ? AND last_locked > 0",
+                )
+                .bind(SESSION_TIMEOUT_SECONDS)
+                .bind(now)
+                .fetch_all(&state.db)
+                .await
+                {
+                    for (username,) in expired {
+                        let _ = sqlx::query("UPDATE sessions SET last_locked = 0 WHERE username = ?")
+                            .bind(&username)
+                            .execute(&state.db)
+                            .await;
+                        let _ = state.users_tx.send(UserEvent {
+                            action: "REMOVE".to_string(),
+                            username: username.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    });
 
     let cors = warp::cors()
         .allow_any_origin()
@@ -209,6 +248,7 @@ fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
     let claim_route = warp::post()
         .and(warp::path!("api" / "username" / "claim"))
         .and(warp::body::json())
+        .and(warp::cookie::optional("session_id"))
         .and(state_filter.clone())
         .and_then(handle_claim);
 
@@ -238,10 +278,20 @@ fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
         .and_then(handle_get_messages);
 
     let sse_route = warp::get()
-        .and(warp::path!("api" / "sse"))
+        .and(warp::path!("api" /"messages" /"sse"))
         .and(warp::cookie::optional("session_id"))
         .and(state_filter.clone())
         .and_then(handle_sse);
+
+    let get_users_route = warp::get()
+        .and(warp::path!("api" / "users"))
+        .and(state_filter.clone())
+        .and_then(handle_get_users);
+
+    let users_sse_route = warp::get()
+        .and(warp::path!("api" / "users" / "sse"))
+        .and(state_filter.clone())
+        .and_then(handle_users_sse);
 
     let stats_route = warp::get()
         .and(warp::path!("api" / "stats"))
@@ -261,6 +311,10 @@ fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
         .unify()
         .or(sse_route)
         .unify()
+        .or(get_users_route)
+        .unify()
+        .or(users_sse_route)
+        .unify()
         .or(stats_route)
         .unify()
         .or(static_files)
@@ -268,7 +322,11 @@ fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
         .boxed()
 }
 
-async fn handle_claim(req: ClaimRequest, state: AppState) -> Result<HttpResponse, warp::Rejection> {
+async fn handle_claim(
+    req: ClaimRequest,
+    cookie_session_id: Option<Julid>,
+    state: AppState,
+) -> Result<HttpResponse, warp::Rejection> {
     let username = req.username.trim();
     if username.is_empty() || username.len() > 32 {
         return Ok(json_response(
@@ -279,58 +337,90 @@ async fn handle_claim(req: ClaimRequest, state: AppState) -> Result<HttpResponse
         ));
     }
 
-    let session_id = Julid::new();
-
     let now = unix_now();
 
-    let existing =
-        sqlx::query_as::<_, (i64,)>("SELECT last_locked FROM sessions WHERE username = ?")
-            .bind(username)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|_| warp::reject::not_found())?;
+    let existing = sqlx::query_as::<_, (Julid, i64)>(
+        "SELECT session_id, last_locked FROM sessions WHERE username = ?",
+    )
+    .bind(username)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| warp::reject::not_found())?;
 
-    match existing {
-        Some((last_locked,)) => {
+    let (final_session_id, is_new_claim) = match existing {
+        Some((existing_session_id, last_locked)) => {
             let is_locked = last_locked + SESSION_TIMEOUT_SECONDS > now;
 
             if is_locked {
-                return Ok(json_response(
-                    StatusCode::CONFLICT,
-                    &ErrorResponse {
-                        error: "Username is taken".into(),
-                    },
-                ));
+                if let Some(cookie_sid) = cookie_session_id {
+                    if cookie_sid == existing_session_id {
+                        (existing_session_id, false)
+                    } else {
+                        return Ok(json_response(
+                            StatusCode::CONFLICT,
+                            &ErrorResponse {
+                                error: "Username is taken".into(),
+                            },
+                        ));
+                    }
+                } else {
+                    return Ok(json_response(
+                        StatusCode::CONFLICT,
+                        &ErrorResponse {
+                            error: "Username is taken".into(),
+                        },
+                    ));
+                }
+            } else {
+                (Julid::new(), true)
             }
-            sqlx::query("UPDATE sessions SET session_id = ?, last_locked = ? WHERE username = ?")
-                .bind(&session_id)
-                .bind(now)
-                .bind(username)
-                .execute(&state.db)
-                .await
-                .map_err(|_| warp::reject::not_found())?;
         }
         None => {
-            sqlx::query(
-                "INSERT INTO sessions (session_id, username, last_locked) VALUES (?, ?, ?)",
-            )
-            .bind(&session_id)
-            .bind(username)
-            .bind(now)
-            .execute(&state.db)
-            .await
-            .map_err(|_| warp::reject::not_found())?;
+            if let Some(cookie_sid) = cookie_session_id {
+                if let Ok(Some((existing_username,))) = sqlx::query_as::<_, (String,)>(
+                    "SELECT username FROM sessions WHERE session_id = ?",
+                )
+                .bind(cookie_sid)
+                .fetch_optional(&state.db)
+                .await
+                {
+                    if existing_username == username {
+                        (cookie_sid, false)
+                    } else {
+                        (Julid::new(), true)
+                    }
+                } else {
+                    (Julid::new(), true)
+                }
+            } else {
+                (Julid::new(), true)
+            }
         }
+    };
+
+    sqlx::query("INSERT OR REPLACE INTO sessions (session_id, username, last_locked) VALUES (?, ?, ?)")
+        .bind(&final_session_id)
+        .bind(username)
+        .bind(now)
+        .execute(&state.db)
+        .await
+        .map_err(|_| warp::reject::not_found())?;
+
+    if is_new_claim {
+        let _ = state.users_tx.send(UserEvent {
+            action: "ADD".to_string(),
+            username: username.to_string(),
+        });
     }
 
     let cookie = format!(
         "session_id={}; HttpOnly; Secure; SameSite=Strict; Path=/",
-        session_id
+        final_session_id
     );
 
     let response = ClaimResponse {
         success: true,
-        session_id: session_id.as_string(),
+        session_id: final_session_id.as_string(),
         expires_in: SESSION_TIMEOUT_SECONDS,
     };
 
@@ -379,10 +469,22 @@ async fn handle_release(
 ) -> Result<HttpResponse, warp::Rejection> {
     if let Some(sid) = session_id {
         let rate_key = sid.to_string();
-        let _ = sqlx::query("UPDATE sessions SET last_locked = 0 WHERE session_id = ?")
-            .bind(sid)
-            .execute(&state.db)
-            .await;
+        if let Ok(Some((username,))) = sqlx::query_as::<_, (String,)>(
+            "SELECT username FROM sessions WHERE session_id = ?",
+        )
+        .bind(sid)
+        .fetch_optional(&state.db)
+        .await
+        {
+            let _ = sqlx::query("UPDATE sessions SET last_locked = 0 WHERE session_id = ?")
+                .bind(sid)
+                .execute(&state.db)
+                .await;
+            let _ = state.users_tx.send(UserEvent {
+                action: "REMOVE".to_string(),
+                username,
+            });
+        }
         state.clear_rate_limit_key(&rate_key).await;
     }
 
@@ -556,6 +658,45 @@ async fn handle_sse(
     Ok(warp::sse::reply(warp::sse::keep_alive().stream(stream)).into_response())
 }
 
+async fn handle_get_users(state: AppState) -> Result<HttpResponse, warp::Rejection> {
+    match get_active_usernames(&state).await {
+        Ok(usernames) => Ok(warp::reply::json(&json!({ "users": usernames })).into_response()),
+        Err(_) => Ok(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ErrorResponse {
+                error: "Failed to fetch users".into(),
+            },
+        )),
+    }
+}
+
+fn users_sse_events(
+    mut rx: broadcast::Receiver<UserEvent>,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    stream! {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if let Ok(data) = serde_json::to_string(&event) {
+                        yield Ok(Event::default().event("user").data(data));
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    // Client lagging, they will re-fetch via API.
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }
+}
+
+async fn handle_users_sse(state: AppState) -> Result<HttpResponse, warp::Rejection> {
+    let rx = state.users_tx.subscribe();
+    let stream = users_sse_events(rx);
+
+    Ok(warp::sse::reply(warp::sse::keep_alive().stream(stream)).into_response())
+}
+
 async fn handle_stats(state: AppState) -> Result<HttpResponse, warp::Rejection> {
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages")
         .fetch_one(&state.db)
@@ -607,6 +748,18 @@ async fn get_username(state: &AppState, session_id: Julid) -> Option<String> {
             None
         }
     })
+}
+
+async fn get_active_usernames(state: &AppState) -> Result<Vec<String>> {
+    let now = unix_now();
+    let usernames: Vec<(String,)> = sqlx::query_as(
+        "SELECT username FROM sessions WHERE last_locked + ? > ? AND last_locked > 0",
+    )
+    .bind(SESSION_TIMEOUT_SECONDS)
+    .bind(now)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(usernames.into_iter().map(|(u,)| u).collect())
 }
 
 async fn init_db(db_url: &str) -> Result<SqlitePool> {
@@ -975,9 +1128,11 @@ mod tests {
     async fn setup_test_app() -> (BoxedFilter<(HttpResponse,)>, AppState) {
         let db = init_in_memory_db().await.expect("init test db");
         let (tx, _rx) = broadcast::channel(32);
+        let (users_tx, _users_rx) = broadcast::channel(32);
         let state = AppState {
             db,
             tx,
+            users_tx,
             rate_limiter: Arc::new(Mutex::new(HashMap::new())),
             rate_limit_window: Duration::from_millis(0),
         };

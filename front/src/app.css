@@ -245,7 +245,7 @@ button:disabled {
 .title {
   background: #0a0a0a;
   color: #44ff44;
-  padding: 0.5rem 0;
+  padding: 0.25rem 0;
   border-radius: 0;
   font-size: 1.25rem;
   font-weight: 700;
@@ -256,15 +256,88 @@ button:disabled {
   text-shadow: 0 0 8px rgba(68, 255, 68, 0.3);
   overflow: hidden;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
 }
 
 @media (min-width: 768px) {
   .title {
     font-size: 1.5rem;
-    padding: 0.75rem 0;
   }
 }
 
 .title .marquee {
   display: inline-block;
+}
+
+.badge {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-left: 0.5rem;
+  background: #ff4444;
+  box-shadow: 0 0 4px rgba(255, 68, 68, 0.6), 0 0 8px rgba(255, 68, 68, 0.4);
+}
+
+.badge.active {
+  background: #44ff44;
+  box-shadow: 0 0 4px rgba(68, 255, 68, 0.6), 0 0 8px rgba(68, 255, 68, 0.4);
+}
+
+.input-group {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.5rem;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle__slider {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  transition: background 0.15s;
+}
+
+.toggle__slider::before {
+  content: "";
+  position: absolute;
+  width: calc(100% / 2 - 1px);
+  height: calc(100% - 2px);
+  left: 1px;
+  top: 1px;
+  background: #666;
+  transition: transform 0.15s;
+}
+
+.toggle input:checked + .toggle__slider {
+  background: #224a22;
+  border-color: #44ff44;
+}
+
+.toggle input:checked + .toggle__slider::before {
+  transform: translateX(100%);
+  background: #44ff44;
+}
+
+.toggle__label {
+  user-select: none;
 }

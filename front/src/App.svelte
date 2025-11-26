@@ -23,13 +23,82 @@
   let sessionDuration = $state(0);
   let remainingSeconds = $state<number | null>(null);
   let countdownHandle = $state<ReturnType<typeof setInterval> | null>(null);
+  let activeUsers = $state<Set<string>>(new Set());
+  let autoReclaimEnabled = $state(true);
+  let usersEventSource = $state<EventSource | null>(null);
+  let totalMessages = $state(0);
+  let statsRefreshHandle: ReturnType<typeof setInterval> | null = null;
+
+  const SETTINGS_KEY = "chat.sacha.house.settings";
+  const STATS_REFRESH_INTERVAL_MS = 20000;
+  const MAX_MESSAGES = 200;
+  const RECLAIM_TRIGGER_SECONDS = 5;
+
+  function loadSettings() {
+    try {
+      const stored = localStorage.getItem(SETTINGS_KEY);
+      if (stored) {
+        const settings = JSON.parse(stored);
+        if (typeof settings.autoReclaimEnabled === "boolean") {
+          autoReclaimEnabled = settings.autoReclaimEnabled;
+        }
+      }
+    } catch (err) {
+      // Use defaults
+    }
+  }
+
+  function saveSettings() {
+    try {
+      const settings = {
+        autoReclaimEnabled,
+      };
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    } catch (err) {
+      // Ignore
+    }
+  }
+
+  async function fetchTotalMessages() {
+    try {
+      const res = await fetch(apiUrl("/api/stats"));
+      if (!res.ok) return;
+      const data = await res.json();
+      if (typeof data?.total_messages === "number") {
+        totalMessages = data.total_messages;
+      }
+    } catch (err) {
+      // Silently fail
+    }
+  }
+
+  function startStatsRefresh() {
+    stopStatsRefresh();
+    fetchTotalMessages();
+    statsRefreshHandle = window.setInterval(() => {
+      fetchTotalMessages();
+    }, STATS_REFRESH_INTERVAL_MS);
+  }
+
+  function stopStatsRefresh() {
+    if (statsRefreshHandle !== null) {
+      clearInterval(statsRefreshHandle);
+      statsRefreshHandle = null;
+    }
+  }
 
   onMount(() => {
+    loadSettings();
     loadMessages();
     restoreUsername();
+    fetchActiveUsers();
+    startUsersStream();
+    startStatsRefresh();
     return () => {
       stopCountdown();
+      stopStatsRefresh();
       eventSource?.close();
+      usersEventSource?.close();
     };
   });
 
@@ -56,12 +125,48 @@
       startCountdown(sessionDuration);
       await loadMessages();
       startStream();
+      startUsersStream();
     } catch (err) {
       status = err instanceof Error ? err.message : "Claim failed";
       claimed = false;
     } finally {
       claiming = false;
     }
+  }
+
+  async function fetchActiveUsers() {
+    try {
+      const res = await fetch(apiUrl("/api/users"));
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.users && Array.isArray(data.users)) {
+        activeUsers = new Set(data.users);
+      }
+    } catch (err) {
+      // Silently fail
+    }
+  }
+
+  function startUsersStream() {
+    usersEventSource?.close();
+    usersEventSource = new EventSource(apiUrl("/api/users/sse"));
+    usersEventSource.addEventListener("user", (event) => {
+      try {
+        const userEvent = JSON.parse(event.data);
+        if (userEvent?.action === "ADD") {
+          activeUsers = new Set([...activeUsers, userEvent.username]);
+        } else if (userEvent?.action === "REMOVE") {
+          const newSet = new Set(activeUsers);
+          newSet.delete(userEvent.username);
+          activeUsers = newSet;
+        }
+      } catch (err) {
+        console.error("Bad user event", err);
+      }
+    });
+    usersEventSource.addEventListener("error", () => {
+      // Reconnect handled by EventSource
+    });
   }
 
   async function restoreUsername() {
@@ -148,11 +253,11 @@
 
   function startStream() {
     eventSource?.close();
-    eventSource = new EventSource(apiUrl("/api/sse"), { withCredentials: true });
+    eventSource = new EventSource(apiUrl("/api/messages/sse"), { withCredentials: true });
     eventSource.addEventListener("message", (event) => {
       try {
         const msg: Message = JSON.parse(event.data);
-        insertMessage(msg);
+        insertMessage(msg, true);
       } catch (err) {
         console.error("Bad event", err);
       }
@@ -162,7 +267,7 @@
     });
   }
 
-  function insertMessage(msg: Message) {
+  function insertMessage(msg: Message, isNew = false) {
     if (messageIds.has(msg.id)) return;
     const next = [...messages];
     let low = 0;
@@ -177,7 +282,10 @@
     }
     next.splice(low, 0, msg);
     messageIds.add(msg.id);
-    if (next.length > 200) {
+    if (isNew) {
+      totalMessages++;
+    }
+    if (next.length > MAX_MESSAGES) {
       const removed = next.pop();
       if (removed) {
         messageIds.delete(removed.id);
@@ -207,8 +315,11 @@
     return Math.floor(n);
   }
 
+  let autoReclaimTriggered = $state(false);
+
   function startCountdown(seconds: number) {
     stopCountdown();
+    autoReclaimTriggered = false;
     if (seconds <= 0) {
       remainingSeconds = null;
       return;
@@ -218,6 +329,10 @@
     countdownHandle = window.setInterval(() => {
       if (remainingSeconds === null) return;
       remainingSeconds = Math.max(0, remainingSeconds - 1);
+      if (remainingSeconds === RECLAIM_TRIGGER_SECONDS && autoReclaimEnabled && claimed && !autoReclaimTriggered) {
+        autoReclaimTriggered = true;
+        claimUsername(new Event("submit") as SubmitEvent);
+      }
       if (remainingSeconds === 0) {
         stopCountdown();
         claimed = false;
@@ -257,11 +372,18 @@
           {claiming ? "Claiming…" : "Claim username"}
         </button>
       {:else}
-        <button type="button" onclick={releaseUsername}>
-          Release username
-          {#if remainingSeconds !== null}
-            (auto release in {remainingSeconds}s){/if}
-        </button>
+        <div class="input-group">
+          <button type="button" onclick={releaseUsername}>
+            {autoReclaimEnabled ? "Auto-reclaim" : "Auto-release"}
+            {#if remainingSeconds !== null}
+              (auto {autoReclaimEnabled ? "reclaim" : "release"} in {remainingSeconds}s){/if}
+          </button>
+          <label class="toggle">
+            <input type="checkbox" bind:checked={autoReclaimEnabled} onchange={saveSettings} />
+            <span class="toggle__slider"></span>
+            <span class="toggle__label">Auto-reclaim</span>
+          </label>
+        </div>
         <p class="claimed">✅ {username} locked for this session.</p>
       {/if}
     </form>
@@ -297,7 +419,10 @@
         {#each messages as message (message.id)}
           <li>
             <header>
-              <strong>{message.username}</strong>
+              <strong>
+                {message.username}
+                <span class="badge" class:active={activeUsers.has(message.username)}></span>
+              </strong>
               <time>{new Date(message.created_at * 1000).toLocaleTimeString()}</time>
             </header>
             <p>{message.text}</p>
