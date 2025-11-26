@@ -244,7 +244,9 @@
 
 <main class="app">
   <section class="panel">
-    <h1 class="title">GL0BALLY_AVAILA8LE_CH4T_R00M</h1>
+    <h1 class="title">
+      <span class="marquee">GL0BALLY_AVAILA8LE_CH4T_R00M — GL0BALLY_AVAILA8LE_CH4T_R00M — </span>
+    </h1>
     <form class="claim" onsubmit={claimUsername}>
       <label>
         Username
