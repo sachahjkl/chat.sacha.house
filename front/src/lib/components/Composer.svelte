@@ -20,9 +20,7 @@
   export async function focusTextarea() {
     if (textarea) {
       await tick();
-      console.log("focusing textarea", textarea);
       textarea.focus();
-      console.log("focused textarea", textarea);
     }
   }
 
