@@ -129,7 +129,6 @@ impl AppState {
                 entry.insert(now);
                 true
             }
-            
         }
     }
 
@@ -185,10 +184,11 @@ async fn main() -> Result<()> {
                 .await
                 {
                     for (username,) in expired {
-                        let _ = sqlx::query("UPDATE sessions SET last_locked = 0 WHERE username = ?")
-                            .bind(&username)
-                            .execute(&state.db)
-                            .await;
+                        let _ =
+                            sqlx::query("UPDATE sessions SET last_locked = 0 WHERE username = ?")
+                                .bind(&username)
+                                .execute(&state.db)
+                                .await;
                         let _ = state.users_tx.send(UserEvent {
                             action: "REMOVE".to_string(),
                             username: username.clone(),
@@ -278,7 +278,7 @@ fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
         .and_then(handle_get_messages);
 
     let sse_route = warp::get()
-        .and(warp::path!("api" /"messages" /"sse"))
+        .and(warp::path!("api" / "messages" / "sse"))
         .and(warp::cookie::optional("session_id"))
         .and(state_filter.clone())
         .and_then(handle_sse);
@@ -398,13 +398,15 @@ async fn handle_claim(
         }
     };
 
-    sqlx::query("INSERT OR REPLACE INTO sessions (session_id, username, last_locked) VALUES (?, ?, ?)")
-        .bind(&final_session_id)
-        .bind(username)
-        .bind(now)
-        .execute(&state.db)
-        .await
-        .map_err(|_| warp::reject::not_found())?;
+    sqlx::query(
+        "INSERT OR REPLACE INTO sessions (session_id, username, last_locked) VALUES (?, ?, ?)",
+    )
+    .bind(final_session_id)
+    .bind(username)
+    .bind(now)
+    .execute(&state.db)
+    .await
+    .map_err(|_| warp::reject::not_found())?;
 
     if is_new_claim {
         let _ = state.users_tx.send(UserEvent {
@@ -434,26 +436,25 @@ async fn handle_get_current_username(
     session_id: Option<Julid>,
     state: AppState,
 ) -> Result<HttpResponse, warp::Rejection> {
-    if let Some(sid) = session_id {
-        if let Some(username) = get_username(&state, sid).await {
-            let now = unix_now();
-            let (last_locked,): (i64,) = sqlx::query_as::<_, (i64,)>(
-                "SELECT last_locked FROM sessions WHERE session_id = ?",
-            )
-            .bind(sid)
-            .fetch_one(&state.db)
-            .await
-            .map_err(|_| warp::reject::not_found())?;
+    if let Some(sid) = session_id
+        && let Some(username) = get_username(&state, sid).await
+    {
+        let now = unix_now();
+        let (last_locked,): (i64,) =
+            sqlx::query_as::<_, (i64,)>("SELECT last_locked FROM sessions WHERE session_id = ?")
+                .bind(sid)
+                .fetch_one(&state.db)
+                .await
+                .map_err(|_| warp::reject::not_found())?;
 
-            let remaining = (last_locked + SESSION_TIMEOUT_SECONDS) - now;
-            let expires_in = if remaining > 0 { Some(remaining) } else { None };
+        let remaining = (last_locked + SESSION_TIMEOUT_SECONDS) - now;
+        let expires_in = if remaining > 0 { Some(remaining) } else { None };
 
-            return Ok(warp::reply::json(&CurrentUsernameResponse {
-                username: Some(username),
-                expires_in,
-            })
-            .into_response());
-        }
+        return Ok(warp::reply::json(&CurrentUsernameResponse {
+            username: Some(username),
+            expires_in,
+        })
+        .into_response());
     }
 
     Ok(warp::reply::json(&CurrentUsernameResponse {
@@ -469,12 +470,11 @@ async fn handle_release(
 ) -> Result<HttpResponse, warp::Rejection> {
     if let Some(sid) = session_id {
         let rate_key = sid.to_string();
-        if let Ok(Some((username,))) = sqlx::query_as::<_, (String,)>(
-            "SELECT username FROM sessions WHERE session_id = ?",
-        )
-        .bind(sid)
-        .fetch_optional(&state.db)
-        .await
+        if let Ok(Some((username,))) =
+            sqlx::query_as::<_, (String,)>("SELECT username FROM sessions WHERE session_id = ?")
+                .bind(sid)
+                .fetch_optional(&state.db)
+                .await
         {
             let _ = sqlx::query("UPDATE sessions SET last_locked = 0 WHERE session_id = ?")
                 .bind(sid)
@@ -550,7 +550,7 @@ async fn handle_post_message(
     let now = unix_now();
 
     sqlx::query("INSERT INTO messages (id, username, text, created_at) VALUES (?, ?, ?, ?)")
-        .bind(&msg_id)
+        .bind(msg_id)
         .bind(&username)
         .bind(text)
         .bind(now)
@@ -997,10 +997,10 @@ fn ensure_sqlite_file(db_url: &str) -> Result<()> {
             return Ok(());
         }
         let path = Path::new(path_part);
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
         }
         if !path.exists() {
             fs::File::create(path)?;
@@ -1093,7 +1093,7 @@ mod tests {
             .unwrap();
         let session_cookie = raw_cookie.split(';').next().expect("cookie kv").to_string();
 
-        let texts = vec!["one", "two", "three", "four", "five"];
+        let texts = ["one", "two", "three", "four", "five"];
 
         for body in texts.iter() {
             let resp = request()
