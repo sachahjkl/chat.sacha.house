@@ -1,31 +1,29 @@
 <script lang="ts">
   import { TextareaAutosize } from "runed";
-  import { tick } from "svelte";
   import { fly } from "svelte/transition";
 
   interface Props {
-    claimed: boolean;
+    enabled?: boolean;
     messageText: string;
-    onSubmit: (text: string) => void;
+    onSubmit: (text: string) => Promise<{ success: boolean }>;
     showScrollToTop: boolean;
     onScrollToTop: () => void;
     onfocus?: () => void;
     onblur?: () => void;
   }
 
-  let form : HTMLFormElement;
+  let form: HTMLFormElement;
 
   const MAX_MESSAGE_LENGTH = 240;
 
-  export async function focusTextarea() {
+  export function focusTextarea() {
     if (textarea) {
-      await tick();
       textarea.focus();
     }
   }
 
   let {
-    claimed,
+    enabled = true,
     messageText = $bindable(),
     onSubmit,
     showScrollToTop,
@@ -34,11 +32,11 @@
     onblur = () => {},
   }: Props = $props();
 
-  let textarea: HTMLTextAreaElement;
+  let textarea: HTMLTextAreaElement = $state(null!);
   new TextareaAutosize({
     element: () => textarea,
     input: () => messageText,
-    maxHeight: 120,
+    maxHeight: 300,
   });
 
   function handleComposerKey(event: KeyboardEvent) {
@@ -50,19 +48,22 @@
 
   function handleSubmit(event?: Event) {
     event?.preventDefault();
-    if (!messageText.trim() || !claimed) return;
-    onSubmit(messageText.trim());
-    messageText = "";
+    if (!messageText.trim() || !enabled) return;
+    onSubmit(messageText.trim()).then(({ success }) => {
+      if (success) {
+        messageText = "";
+      }
+    });
   }
 </script>
 
 <form bind:this={form} class="composer" onsubmit={handleSubmit}>
   <textarea
     bind:this={textarea}
-    placeholder={claimed ? "Say something nice" : "Claim a username first"}
+    placeholder={enabled ? "Say something nice" : "Claim a username first"}
     bind:value={messageText}
     maxlength={MAX_MESSAGE_LENGTH}
-    disabled={!claimed}
+    disabled={!enabled}
     name="message-text"
     onkeydown={handleComposerKey}
     {onfocus}
@@ -83,7 +84,7 @@
           ↑
         </button>
       {/if}
-      <button type="submit" disabled={!claimed || !messageText.trim()}>Send</button>
+      <button type="submit" disabled={!enabled || !messageText.trim()}>Send</button>
     </div>
   </div>
 </form>

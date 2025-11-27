@@ -1,7 +1,6 @@
 <script lang="ts">
   import { slide } from "svelte/transition";
   import { notifications } from "../stores/notifications";
-  import type { Notification } from "../types";
 
   interface Props {
     position?: "top" | "bottom";
@@ -11,21 +10,14 @@
 
   const SNACKBAR_DURATION_MS = 5000;
 
-  let notificationList = $state<Notification[]>([]);
   let remainingSeconds = $state<Map<string, number>>(new Map());
 
-  $effect(() => {
-    const unsubscribe = notifications.subscribe((state) => {
-      notificationList = state.notifications;
-    });
-    return unsubscribe;
-  });
 
   $effect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
       const newRemaining = new Map<string, number>();
-      for (const notification of notificationList) {
+      for (const notification of $notifications.notifications) {
         const elapsed = now - notification.createdAt;
         const remaining = Math.max(0, Math.ceil((SNACKBAR_DURATION_MS - elapsed) / 1000));
         newRemaining.set(notification.id, remaining);
@@ -41,7 +33,7 @@
 </script>
 
 <div class="snackbar-container" class:top={position === "top"} class:bottom={position === "bottom"}>
-  {#each notificationList as notification (notification.id)}
+  {#each $notifications.notifications as notification (notification.id)}
     <button
       type="button"
       class="snackbar"

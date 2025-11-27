@@ -5,24 +5,25 @@
 
   interface Props {
     messages: Message[];
-    activeUsers: SvelteSet<string>;
+    activeUsernames: SvelteSet<string>;
   }
 
-  let { messages, activeUsers }: Props = $props();
+  let { messages, activeUsernames }: Props = $props();
 </script>
 
 {#if messages.length === 0}
   <p class="empty">No messages yet.</p>
 {:else}
   <ul class="message-list">
-    {#each messages as message (message.id)}
+    {#each messages as message}
+      {@const date = new Date(message.created_at * 1000)}
       <li transition:fly={{ y: -20, duration: 100 }}>
         <header>
           <strong class="username">
-            <span class="badge" class:active={activeUsers.has(message.username)}></span>
+            <span class="badge" class:active={activeUsernames.has(message.username)}></span>
             {message.username}
           </strong>
-          <time>{new Date(message.created_at * 1000).toLocaleTimeString()}</time>
+          <time>{date.toLocaleString()}</time>
         </header>
         <p>{message.text}</p>
       </li>
@@ -73,11 +74,6 @@
     font-weight: 600;
   }
 
-  .message-list li time {
-    color: #666;
-    font-size: 0.8rem;
-  }
-
   .message-list li p {
     margin: 0;
     color: #d0d0d0;
@@ -108,5 +104,16 @@
     box-shadow:
       0 0 4px rgba(68, 255, 68, 0.6),
       0 0 8px rgba(68, 255, 68, 0.4);
+  }
+
+  .message-list li time {
+    color: #666;
+    font-size: 0.6rem;
+  }
+
+  @media (min-width: 640px) {
+    .message-list li time {
+      font-size: 0.8rem;
+    }
   }
 </style>

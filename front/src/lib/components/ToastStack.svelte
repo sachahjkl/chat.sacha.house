@@ -1,25 +1,16 @@
 <script lang="ts">
   import { fly } from "svelte/transition";
   import { notifications } from "../stores/notifications";
-  import type { Notification } from "../types";
 
   const TOAST_DURATION_MS = 5000;
 
-  let notificationList = $state<Notification[]>([]);
   let remainingSeconds = $state<Map<string, number>>(new Map());
-
-  $effect(() => {
-    const unsubscribe = notifications.subscribe((state) => {
-      notificationList = state.notifications;
-    });
-    return unsubscribe;
-  });
 
   $effect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
       const next = new Map<string, number>();
-      for (const toast of notificationList) {
+      for (const toast of $notifications.notifications) {
         const elapsed = now - toast.createdAt;
         const remaining = Math.max(0, Math.ceil((TOAST_DURATION_MS - elapsed) / 1000));
         next.set(toast.id, remaining);
@@ -35,7 +26,7 @@
 </script>
 
 <div class="toast-stack">
-  {#each notificationList as toast (toast.id)}
+  {#each $notifications.notifications as toast (toast.id)}
     <button
       type="button"
       class="toast"

@@ -19,6 +19,7 @@ export type Notification = {
 export type ClaimResponse = {
   success: boolean;
   session_id: Julid;
+  username: string;
   expires_in: number;
 };
 
@@ -42,6 +43,11 @@ export type MessagesResponse = {
   messages: Message[];
 };
 
+export type PostMessageResponse = {
+  success: boolean;
+  message_id: Julid;
+};
+
 export type UsernameReleaseResponse = {
   success: boolean;
 };
@@ -53,3 +59,11 @@ export type StatsResponse = {
 export type Username = string;
 
 export type IntervalHandle = ReturnType<typeof setInterval>;
+
+export type Settings = {
+  autoReclaimEnabled: boolean;
+};
+
+export type ErrorResponse = {
+  error: string;
+};

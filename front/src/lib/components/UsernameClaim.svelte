@@ -2,8 +2,8 @@
   import AutoReclaimToggle from "./AutoReclaimToggle.svelte";
 
   interface Props {
-    username: string;
-    claimed: boolean;
+    usernameInput?: string;
+    claimedUsername: string | null;
     claiming: boolean;
     autoReclaimEnabled: boolean;
     remainingSeconds: number | null;
@@ -14,8 +14,8 @@
   }
 
   let {
-    username = $bindable(),
-    claimed,
+    usernameInput = $bindable(""),
+    claimedUsername,
     claiming,
     autoReclaimEnabled = $bindable(),
     remainingSeconds,
@@ -25,17 +25,23 @@
     onToggleAutoReclaim,
   }: Props = $props();
 
+  $effect(() => {
+    if (claimedUsername) {
+      usernameInput = claimedUsername;
+    }
+  });
+
   function handleClaim(event: SubmitEvent) {
     event.preventDefault();
-    if (!username.trim()) return;
-    onClaim(username.trim());
+    if (!usernameInput.trim()) return;
+    onClaim(usernameInput.trim());
   }
 
   function handleManualClick() {
     if (autoReclaimEnabled) {
       onRelease();
     } else {
-      onClaim(username.trim());
+      onClaim(usernameInput.trim());
     }
   }
 </script>
@@ -48,25 +54,25 @@
     name="username"
     aria-label="Username"
     placeholder="Pick a username"
-    bind:value={username}
-    disabled={claiming || claimed}
+    bind:value={usernameInput}
+    disabled={claiming || Boolean(claimedUsername)}
     autocomplete="off"
   />
   <div class="bottom-stuff">
-    {#if !claimed}
+    {#if !claimedUsername}
       <div class="input-group justify-end">
-        <button type="submit" disabled={claiming || !username.trim()}>
+        <button type="submit" disabled={claiming || !usernameInput.trim()}>
           {claiming ? "Claiming…" : "Claim username"}
         </button>
       </div>
     {:else}
       <div class="input-group justify-between wrap">
-        <p class="claimed grow">🔒 username "{username}" locked for this session.</p>
+        <p class="claimed grow">🔒 username "{claimedUsername}" locked for this session.</p>
         <div class="flex-align-center justify-end grow">
           <AutoReclaimToggle
             bind:enabled={autoReclaimEnabled}
             title="Toggle auto reclaim"
-            label="Auto reclaim"
+            label={autoReclaimEnabled ? "Auto reclaim" : "Manual reclaim"}
             onToggle={onToggleAutoReclaim}
           />
           <button
@@ -75,9 +81,8 @@
             class:claim={!autoReclaimEnabled}
             onclick={handleManualClick}
           >
-            {autoReclaimEnabled ? "Manual release" : "Manual claim"}
-            {#if remainingSeconds !== null}
-              (auto {autoReclaimEnabled ? "reclaim" : "release"} in {remainingSeconds}s){/if}
+            {autoReclaimEnabled ? "Manual release" : "Manual reclaim"}
+            {#if remainingSeconds !== null}({remainingSeconds}s){/if}
           </button>
         </div>
       </div>

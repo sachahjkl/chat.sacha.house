@@ -11,6 +11,7 @@ use std::{
     convert::{Infallible, TryInto},
     fs,
     path::Path,
+    str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -21,8 +22,12 @@ use warp::{Filter, Reply, filters::BoxedFilter, http::Method, sse::Event};
 type HttpResponse = warp::reply::Response;
 
 static DIST: Dir = include_dir!("front/dist");
-// static SESSION_TIMEOUT_SECONDS: i64 = 10 * 5; // 5 minutes
-static SESSION_TIMEOUT_SECONDS: i64 = 60; // 60 seconds (DEBUG)
+
+static SESSION_TIMEOUT_SECONDS: i64 = if cfg!(debug_assertions) {
+    60 * 5 // 5 minutes
+} else {
+    10 // 10 seconds
+};
 
 static MAX_MESSAGE_LENGTH: usize = 240;
 
@@ -52,7 +57,7 @@ struct Message {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct UserEvent {
-    action: String, // "ADD" or "REMOVE"
+    action: UserEventAction,
     username: String,
 }
 
@@ -73,6 +78,7 @@ struct ClaimRequest {
 struct ClaimResponse {
     success: bool,
     session_id: String, // julid.as_string()
+    username: String,
     expires_in: i64,
 }
 
@@ -190,7 +196,7 @@ async fn main() -> Result<()> {
                                 .execute(&state.db)
                                 .await;
                         let _ = state.users_tx.send(UserEvent {
-                            action: "REMOVE".to_string(),
+                            action: UserEventAction::Remove,
                             username: username.clone(),
                         });
                     }
@@ -219,7 +225,8 @@ async fn main() -> Result<()> {
             "Access-Control-Request-Method",
             "Access-Control-Allow-Credentials",
         ])
-        .allow_methods(&[Method::GET, Method::POST, Method::OPTIONS]);
+        .allow_methods(&[Method::GET, Method::POST, Method::OPTIONS])
+        .allow_credentials(true);
 
     let bind_host = std::env::var("BIND_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let bind_port: u16 = std::env::var("BIND_PORT")
@@ -248,26 +255,30 @@ fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
     let claim_route = warp::post()
         .and(warp::path!("api" / "username" / "claim"))
         .and(warp::body::json())
-        .and(warp::cookie::optional("session_id"))
+        .and(warp::header::optional::<AuthenticationString<String, Julid>>("authorization"))
         .and(state_filter.clone())
         .and_then(handle_claim);
 
     let get_current_username_route = warp::get()
         .and(warp::path!("api" / "username" / "current"))
-        .and(warp::cookie::optional("session_id"))
+        .and(warp::header::optional::<AuthenticationString<String, Julid>>("authorization"))
         .and(state_filter.clone())
         .and_then(handle_get_current_username);
 
     let release_route = warp::post()
         .and(warp::path!("api" / "username" / "release"))
-        .and(warp::cookie::optional("session_id"))
+        .and(warp::header::<AuthenticationString<String, Julid>>(
+            "authorization",
+        ))
         .and(state_filter.clone())
         .and_then(handle_release);
 
     let post_message_route = warp::post()
         .and(warp::path!("api" / "messages"))
         .and(warp::body::json())
-        .and(warp::cookie::optional("session_id"))
+        .and(warp::header::<AuthenticationString<String, Julid>>(
+            "authorization",
+        ))
         .and(state_filter.clone())
         .and_then(handle_post_message);
 
@@ -277,11 +288,10 @@ fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
         .and(state_filter.clone())
         .and_then(handle_get_messages);
 
-    let sse_route = warp::get()
+    let messages_sse_route = warp::get()
         .and(warp::path!("api" / "messages" / "sse"))
-        .and(warp::cookie::optional("session_id"))
         .and(state_filter.clone())
-        .and_then(handle_sse);
+        .and_then(handle_messages_sse);
 
     let get_users_route = warp::get()
         .and(warp::path!("api" / "users"))
@@ -309,7 +319,7 @@ fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
         .unify()
         .or(get_messages_route)
         .unify()
-        .or(sse_route)
+        .or(messages_sse_route)
         .unify()
         .or(get_users_route)
         .unify()
@@ -324,7 +334,7 @@ fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
 
 async fn handle_claim(
     req: ClaimRequest,
-    cookie_session_id: Option<Julid>,
+    auth: Option<AuthenticationString<String, Julid>>,
     state: AppState,
 ) -> Result<HttpResponse, warp::Rejection> {
     let username = req.username.trim();
@@ -337,9 +347,11 @@ async fn handle_claim(
         ));
     }
 
+    let maybe_session_id = auth.and_then(|auth| auth.extract_bearer_token());
+
     let now = unix_now();
 
-    let existing = sqlx::query_as::<_, (Julid, i64)>(
+    let existing = sqlx::query_as::<_, (Option<Julid>, i64)>(
         "SELECT session_id, last_locked FROM sessions WHERE username = ?",
     )
     .bind(username)
@@ -348,52 +360,44 @@ async fn handle_claim(
     .map_err(|_| warp::reject::not_found())?;
 
     let (final_session_id, is_new_claim) = match existing {
-        Some((existing_session_id, last_locked)) => {
+        Some((maybe_existing_session_id, last_locked)) => {
             let is_locked = last_locked + SESSION_TIMEOUT_SECONDS > now;
 
-            if is_locked {
-                if let Some(cookie_sid) = cookie_session_id {
-                    if cookie_sid == existing_session_id {
-                        (existing_session_id, false)
-                    } else {
-                        return Ok(json_response(
-                            StatusCode::CONFLICT,
-                            &ErrorResponse {
-                                error: "Username is taken".into(),
-                            },
-                        ));
-                    }
-                } else {
-                    return Ok(json_response(
-                        StatusCode::CONFLICT,
-                        &ErrorResponse {
-                            error: "Username is taken".into(),
-                        },
-                    ));
-                }
+            let is_same_session = match (maybe_session_id, maybe_existing_session_id) {
+                (Some(session_id), Some(existing_session_id)) => session_id == existing_session_id,
+                _ => false,
+            };
+
+            if is_same_session {
+                (maybe_existing_session_id.unwrap_or(Julid::new()), false)
+            } else if is_locked {
+                return Ok(json_response(
+                    StatusCode::CONFLICT,
+                    &ErrorResponse {
+                        error: "Username is taken".into(),
+                    },
+                ));
             } else {
                 (Julid::new(), true)
             }
         }
         None => {
-            if let Some(cookie_sid) = cookie_session_id {
-                if let Ok(Some((existing_username,))) = sqlx::query_as::<_, (String,)>(
-                    "SELECT username FROM sessions WHERE session_id = ?",
-                )
-                .bind(cookie_sid)
-                .fetch_optional(&state.db)
-                .await
-                {
-                    if existing_username == username {
-                        (cookie_sid, false)
-                    } else {
-                        (Julid::new(), true)
-                    }
-                } else {
-                    (Julid::new(), true)
-                }
+            let result = if let Some(session_id) = maybe_session_id {
+                sqlx::query_as::<_, (String,)>("SELECT username FROM sessions WHERE session_id = ?")
+                    .bind(session_id)
+                    .fetch_optional(&state.db)
+                    .await
+                    .ok()
+                    .flatten()
+                    .filter(|(existing_username,)| *existing_username == username)
+                    .map(|_| session_id)
             } else {
-                (Julid::new(), true)
+                None
+            };
+
+            match result {
+                Some(session_id) => (session_id, false),
+                None => (Julid::new(), true),
             }
         }
     };
@@ -410,43 +414,29 @@ async fn handle_claim(
 
     if is_new_claim {
         let _ = state.users_tx.send(UserEvent {
-            action: "ADD".to_string(),
+            action: UserEventAction::Add,
             username: username.to_string(),
         });
     }
 
-    let cookie = format!(
-        "session_id={}; HttpOnly; Secure; SameSite=Strict; Path=/",
-        final_session_id
-    );
-
     let response = ClaimResponse {
         success: true,
         session_id: final_session_id.as_string(),
+        username: username.to_string(),
         expires_in: SESSION_TIMEOUT_SECONDS,
     };
 
-    Ok(
-        warp::reply::with_header(warp::reply::json(&response), "Set-Cookie", cookie)
-            .into_response(),
-    )
+    Ok(json_response(StatusCode::OK, &response))
 }
 
 async fn handle_get_current_username(
-    session_id: Option<Julid>,
+    auth: Option<AuthenticationString<String, Julid>>,
     state: AppState,
 ) -> Result<HttpResponse, warp::Rejection> {
-    if let Some(sid) = session_id
-        && let Some(username) = get_username(&state, sid).await
+    if let Some(session_id) = auth.and_then(|auth| auth.extract_bearer_token())
+        && let Some((username, last_locked)) = get_username_info(&state, session_id).await
     {
         let now = unix_now();
-        let (last_locked,): (i64,) =
-            sqlx::query_as::<_, (i64,)>("SELECT last_locked FROM sessions WHERE session_id = ?")
-                .bind(sid)
-                .fetch_one(&state.db)
-                .await
-                .map_err(|_| warp::reject::not_found())?;
-
         let remaining = (last_locked + SESSION_TIMEOUT_SECONDS) - now;
         let expires_in = if remaining > 0 { Some(remaining) } else { None };
 
@@ -465,58 +455,51 @@ async fn handle_get_current_username(
 }
 
 async fn handle_release(
-    session_id: Option<Julid>,
+    auth: AuthenticationString<String, Julid>,
     state: AppState,
 ) -> Result<HttpResponse, warp::Rejection> {
-    if let Some(sid) = session_id {
-        let rate_key = sid.to_string();
-        if let Ok(Some((username,))) =
-            sqlx::query_as::<_, (String,)>("SELECT username FROM sessions WHERE session_id = ?")
-                .bind(sid)
-                .fetch_optional(&state.db)
-                .await
-        {
-            let _ = sqlx::query("UPDATE sessions SET last_locked = 0 WHERE session_id = ?")
-                .bind(sid)
-                .execute(&state.db)
-                .await;
-            let _ = state.users_tx.send(UserEvent {
-                action: "REMOVE".to_string(),
-                username,
-            });
+    let session_id = match auth.extract_bearer_token() {
+        Some(s) => s,
+        None => {
+            return Ok(unauthorized());
         }
-        state.clear_rate_limit_key(&rate_key).await;
+    };
+
+    let rate_key = session_id.to_string();
+    if let Ok(Some((username,))) =
+        sqlx::query_as::<_, (String,)>("SELECT username FROM sessions WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_optional(&state.db)
+            .await
+    {
+        let _ = sqlx::query("UPDATE sessions SET last_locked = 0 WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&state.db)
+            .await;
+        let _ = state.users_tx.send(UserEvent {
+            action: UserEventAction::Remove,
+            username,
+        });
     }
+    state.clear_rate_limit_key(&rate_key).await;
 
-    let cookie = "session_id=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0";
-
-    Ok(warp::reply::with_header(
-        warp::reply::json(&json!({"success": true})),
-        "Set-Cookie",
-        cookie,
-    )
-    .into_response())
+    Ok(warp::reply::json(&json!({"success": true})).into_response())
 }
 
 async fn handle_post_message(
     req: PostMessageRequest,
-    session_id: Option<Julid>,
+    auth: AuthenticationString<String, Julid>,
     state: AppState,
 ) -> Result<HttpResponse, warp::Rejection> {
-    let session_id = match session_id {
+    let session_id = match auth.extract_bearer_token() {
         Some(s) => s,
         None => {
-            return Ok(json_response(
-                StatusCode::UNAUTHORIZED,
-                &ErrorResponse {
-                    error: "Unauthorized".into(),
-                },
-            ));
+            return Ok(unauthorized());
         }
     };
 
-    let username = match get_username(&state, session_id).await {
-        Some(u) => u,
+    let username = match get_username_info(&state, session_id).await {
+        Some((username, _)) => username,
         None => {
             return Ok(json_response(
                 StatusCode::UNAUTHORIZED,
@@ -638,20 +621,7 @@ fn sse_events(
     }
 }
 
-async fn handle_sse(
-    session_id: Option<Julid>,
-    state: AppState,
-) -> Result<HttpResponse, warp::Rejection> {
-    let session_id = match session_id {
-        Some(s) => s,
-        None => {
-            return Ok(unauthorized());
-        }
-    };
-    if get_username(&state, session_id).await.is_none() {
-        return Ok(unauthorized());
-    }
-
+async fn handle_messages_sse(state: AppState) -> Result<HttpResponse, warp::Rejection> {
     let rx = state.tx.subscribe();
     let stream = sse_events(rx);
 
@@ -731,7 +701,7 @@ async fn handle_static(path: warp::path::Tail) -> Result<HttpResponse, warp::Rej
     Err(warp::reject::not_found())
 }
 
-async fn get_username(state: &AppState, session_id: Julid) -> Option<String> {
+async fn get_username_info(state: &AppState, session_id: Julid) -> Option<(String, i64)> {
     let now = unix_now();
     sqlx::query_as::<_, (String, i64)>(
         "SELECT username, last_locked FROM sessions WHERE session_id = ?",
@@ -743,7 +713,7 @@ async fn get_username(state: &AppState, session_id: Julid) -> Option<String> {
     .flatten()
     .and_then(|(username, last_locked)| {
         if last_locked + SESSION_TIMEOUT_SECONDS > now {
-            Some(username)
+            Some((username, last_locked))
         } else {
             None
         }
@@ -1011,6 +981,47 @@ fn ensure_sqlite_file(db_url: &str) -> Result<()> {
 
 fn json_response<T: Serialize>(status: StatusCode, payload: &T) -> HttpResponse {
     warp::reply::with_status(warp::reply::json(payload), status).into_response()
+}
+
+// impl Bearer string FromStr to get the token type and the value
+impl<AuthType: Into<String> + FromStr, Value: FromStr> FromStr
+    for AuthenticationString<AuthType, Value>
+{
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        let parts = s.splitn(2, ' ').collect::<Vec<&str>>();
+        if parts.len() != 2 {
+            bail!("Invalid authentication string");
+        }
+        Ok(AuthenticationString {
+            authentication_type: AuthType::from_str(parts[0])
+                .map_err(|_| anyhow::anyhow!("Invalid authentication type"))?,
+            authentication_value: Value::from_str(parts[1])
+                .map_err(|_| anyhow::anyhow!("Invalid authentication value"))?,
+        })
+    }
+}
+
+impl AuthenticationString<String, Julid> {
+    fn extract_bearer_token(&self) -> Option<Julid> {
+        if self.authentication_type == "Bearer" {
+            return Some(self.authentication_value);
+        }
+        None
+    }
+}
+
+struct AuthenticationString<AuthType: Into<String>, Value: FromStr> {
+    authentication_type: AuthType,
+    authentication_value: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+enum UserEventAction {
+    #[serde(rename = "ADD")]
+    Add,
+    #[serde(rename = "REMOVE")]
+    Remove,
 }
 
 #[cfg(test)]
