@@ -7,6 +7,7 @@
     claiming: boolean;
     autoReclaimEnabled: boolean;
     remainingSeconds: number | null;
+    usernamePattern?: string;
     onClaim: (username: string) => void;
     onRelease: () => void;
     onToggleAutoReclaim: (enabled: boolean) => void;
@@ -18,6 +19,7 @@
     claiming,
     autoReclaimEnabled = $bindable(),
     remainingSeconds,
+    usernamePattern = "[a-z0-9]+",
     onClaim,
     onRelease,
     onToggleAutoReclaim,
@@ -40,43 +42,47 @@
 
 <form class="claim" onsubmit={handleClaim}>
   <input
+    type="text"
+    pattern={usernamePattern}
+    title="Username: lowercase letters and numbers only"
     name="username"
-    title="Username"
     aria-label="Username"
     placeholder="Pick a username"
     bind:value={username}
     disabled={claiming || claimed}
     autocomplete="off"
   />
-  {#if !claimed}
-    <div class="input-group justify-end">
-      <button class="text-sm" type="submit" disabled={claiming || !username.trim()}>
-        {claiming ? "Claiming…" : "Claim username"}
-      </button>
-    </div>
-  {:else}
-    <div class="input-group text-sm justify-between">
-      <p class="claimed grow">🔒 username "{username}" locked for this session.</p>
-      <div class="flex-align-center justify-end grow">
-        <AutoReclaimToggle
-          bind:enabled={autoReclaimEnabled}
-          title="Toggle auto reclaim"
-          label="Auto reclaim"
-          onToggle={onToggleAutoReclaim}
-        />
-        <button
-          type="button"
-          class:release={autoReclaimEnabled}
-          class:claim={!autoReclaimEnabled}
-          onclick={handleManualClick}
-        >
-          {autoReclaimEnabled ? "Manual release" : "Manual claim"}
-          {#if remainingSeconds !== null}
-            (auto {autoReclaimEnabled ? "reclaim" : "release"} in {remainingSeconds}s){/if}
+  <div class="bottom-stuff">
+    {#if !claimed}
+      <div class="input-group justify-end">
+        <button type="submit" disabled={claiming || !username.trim()}>
+          {claiming ? "Claiming…" : "Claim username"}
         </button>
       </div>
-    </div>
-  {/if}
+    {:else}
+      <div class="input-group justify-between wrap">
+        <p class="claimed grow">🔒 username "{username}" locked for this session.</p>
+        <div class="flex-align-center justify-end grow">
+          <AutoReclaimToggle
+            bind:enabled={autoReclaimEnabled}
+            title="Toggle auto reclaim"
+            label="Auto reclaim"
+            onToggle={onToggleAutoReclaim}
+          />
+          <button
+            type="button"
+            class:release={autoReclaimEnabled}
+            class:claim={!autoReclaimEnabled}
+            onclick={handleManualClick}
+          >
+            {autoReclaimEnabled ? "Manual release" : "Manual claim"}
+            {#if remainingSeconds !== null}
+              (auto {autoReclaimEnabled ? "reclaim" : "release"} in {remainingSeconds}s){/if}
+          </button>
+        </div>
+      </div>
+    {/if}
+  </div>
 </form>
 
 <style>
@@ -84,6 +90,16 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+  }
+
+  .bottom-stuff {
+    font-size: 0.75rem;
+  }
+
+  @media (min-width: 768px) {
+    .bottom-stuff {
+      font-size: 1rem;
+    }
   }
 
   input {
@@ -163,9 +179,12 @@
 
   .input-group {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem;
+  }
+
+  .wrap {
+    flex-wrap: wrap;
   }
 
   .justify-between {
@@ -178,7 +197,6 @@
 
   .flex-align-center {
     display: flex;
-    flex-wrap: wrap;
     gap: 0.5rem;
     align-items: center;
   }
@@ -189,14 +207,9 @@
 
   .claimed {
     margin: 0;
-    font-size: 0.9rem;
     color: #44ff44;
     padding: 0.5rem;
     background: #112a11;
     border: 1px solid #224a22;
-  }
-
-  .text-sm {
-    font-size: 0.85rem;
   }
 </style>

@@ -84,7 +84,7 @@
   }
 
   .snackbar-container.top {
-    top: 0;
+    top: 0px;
     flex-direction: column;
     padding: 0.5rem;
   }
@@ -97,7 +97,7 @@
   }
 
   .snackbar {
-    background: #1a1a1a;
+    background: #0e0a0a;
     border: 1px solid #2a2a2a;
     color: #e0e0e0;
     padding: 0.75rem 1rem;

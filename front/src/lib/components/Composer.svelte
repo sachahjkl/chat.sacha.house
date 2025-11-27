@@ -1,5 +1,6 @@
 <script lang="ts">
   import { TextareaAutosize } from "runed";
+  import { tick } from "svelte";
   import { fly } from "svelte/transition";
 
   interface Props {
@@ -8,13 +9,34 @@
     onSubmit: (text: string) => void;
     showScrollToTop: boolean;
     onScrollToTop: () => void;
+    onfocus?: () => void;
+    onblur?: () => void;
   }
+
+  let form : HTMLFormElement;
 
   const MAX_MESSAGE_LENGTH = 240;
 
-  let { claimed, messageText = $bindable(), onSubmit, showScrollToTop, onScrollToTop }: Props = $props();
+  export async function focusTextarea() {
+    if (textarea) {
+      await tick();
+      console.log("focusing textarea", textarea);
+      textarea.focus();
+      console.log("focused textarea", textarea);
+    }
+  }
 
-  let textarea = $state<HTMLTextAreaElement>(null!);
+  let {
+    claimed,
+    messageText = $bindable(),
+    onSubmit,
+    showScrollToTop,
+    onScrollToTop,
+    onfocus = () => {},
+    onblur = () => {},
+  }: Props = $props();
+
+  let textarea: HTMLTextAreaElement;
   new TextareaAutosize({
     element: () => textarea,
     input: () => messageText,
@@ -24,7 +46,7 @@
   function handleComposerKey(event: KeyboardEvent) {
     if (event.key === "Enter" && event.ctrlKey) {
       event.preventDefault();
-      handleSubmit();
+      form.requestSubmit();
     }
   }
 
@@ -36,7 +58,7 @@
   }
 </script>
 
-<form class="composer" onsubmit={handleSubmit}>
+<form bind:this={form} class="composer" onsubmit={handleSubmit}>
   <textarea
     bind:this={textarea}
     placeholder={claimed ? "Say something nice" : "Claim a username first"}
@@ -45,6 +67,8 @@
     disabled={!claimed}
     name="message-text"
     onkeydown={handleComposerKey}
+    {onfocus}
+    {onblur}
   ></textarea>
   <div class="composer__meta">
     <span>{messageText.trim().length}/240</span>

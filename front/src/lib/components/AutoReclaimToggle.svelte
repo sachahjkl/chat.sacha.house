@@ -3,10 +3,10 @@
     enabled: boolean;
     label?: string;
     title?: string;
-    onToggle: (enabled: boolean) => void;
+    onToggle?: (enabled: boolean) => void;
   }
 
-  let { enabled = $bindable(), label, title = "Toggle auto reclaim", onToggle }: Props = $props();
+  let { enabled = $bindable(), label, title = "Toggle auto reclaim", onToggle = () => {} }: Props = $props();
 
   function handleToggle(event: Event) {
     const target = event.target as HTMLInputElement;

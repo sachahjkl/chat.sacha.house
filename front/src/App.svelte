@@ -1,35 +1,49 @@
 <script lang="ts">
   import { ScrollState } from "runed";
   import { onDestroy, onMount } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import Composer from "./lib/components/Composer.svelte";
   import MessageList from "./lib/components/MessageList.svelte";
-  import Snackbar from "./lib/components/Snackbar.svelte";
+  import ToastStack from "./lib/components/ToastStack.svelte";
   import UsernameClaim from "./lib/components/UsernameClaim.svelte";
   import { notifications } from "./lib/stores/notifications";
-  import type { Message } from "./lib/types";
+  import type {
+    ClaimResponse,
+    CurrentUsernameResponse,
+    IntervalHandle,
+    Julid,
+    Message,
+    MessagesResponse,
+    StatsResponse,
+    UserEvent,
+    Username,
+    UsernameReleaseResponse,
+    UsersResponse,
+  } from "./lib/types";
+  import { else_if_NaN } from "./lib/utils";
 
   const API_BASE = (import.meta.env.VITE_API_BASE ?? "") as string;
 
   const apiUrl = (path: string) => (API_BASE ? `${API_BASE}${path}` : path);
 
-  let username = $state("");
+  let currentUsername = $state<Username>("");
   let claimed = $state(false);
   let claiming = $state(false);
   let messageText = $state("");
+  let composerElement: Composer | null = null;
   let messages = $state<Message[]>([]);
-  const messageIds = new Set<string>();
+  let messageIds = new SvelteSet<Julid>();
   let eventSource = $state<EventSource | null>(null);
   let sessionDuration = $state(0);
   let remainingSeconds = $state<number | null>(null);
-  let countdownHandle = $state<ReturnType<typeof setInterval> | null>(null);
-  let activeUsers = $state<Set<string>>(new Set());
+  let countdownHandle = $state<IntervalHandle | null>(null);
+  let activeUsers = new SvelteSet<string>();
   let autoReclaimEnabled = $state(true);
   let usersEventSource = $state<EventSource | null>(null);
   let totalMessages = $state(0);
-  let statsRefreshHandle: ReturnType<typeof setInterval> | null = null;
-  let windowElement = $state<HTMLElement>();
-  let composerPanel = $state<HTMLElement>();
+  let statsRefreshHandle: IntervalHandle | null = null;
   let viewportOffset = $state(0);
+  let composerFocused = $state(false);
   const scroll = new ScrollState({
     element: () => window,
   });
@@ -68,10 +82,9 @@
     try {
       const res = await fetch(apiUrl("/api/stats"));
       if (!res.ok) return;
-      const data = await res.json();
-      if (typeof data?.total_messages === "number") {
-        totalMessages = data.total_messages;
-      }
+      const data: StatsResponse | null = await res.json();
+
+      totalMessages = else_if_NaN(data?.total_messages, 0);
     } catch (err) {
       // Silently fail
     }
@@ -95,7 +108,7 @@
   onMount(() => {
     loadSettings();
     loadMessages();
-    restoreUsername();
+    tryRestoreUsername();
     fetchActiveUsers();
     startUsersStream();
     startStatsRefresh();
@@ -125,28 +138,48 @@
     };
   });
 
+  function parseUsername(username: string): Username {
+    return username.trim().toLowerCase();
+  }
+
   async function handleClaim({ usernameInput, silent = false }: { usernameInput: string; silent?: boolean }) {
-    if (!usernameInput.trim()) return;
+    const username = parseUsername(usernameInput);
+    if (!username) return;
+
     claiming = true;
+
     if (!silent) {
       notifications.showNotification("Claiming username…", "info");
     }
+
     try {
       const res = await fetch(apiUrl("/api/username/claim"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ username: usernameInput.trim() }),
+        body: JSON.stringify({ username }),
       });
+
       if (!res.ok) {
         const err = await safeJson(res);
         throw new Error(err?.error ?? `claim failed (${res.status})`);
       }
-      const data = await res.json();
-      sessionDuration = normalizeSeconds(data?.expires_in);
+
+      const data: ClaimResponse | null = await res.json();
+      if (!data) {
+        throw new Error("Invalid claim response");
+      }
+
+      sessionDuration = normalizeSeconds(data.expires_in);
       claimed = true;
-      username = usernameInput.trim();
+      currentUsername = username;
+
       startCountdown(sessionDuration);
+
+      if (!silent) {
+        composerElement?.focusTextarea();
+      }
+
       await loadMessages();
       startStream();
       startUsersStream();
@@ -154,7 +187,6 @@
       if (!silent) {
         notifications.showNotification(err instanceof Error ? err.message : "Claim failed", "error");
       }
-      claimed = false;
     } finally {
       claiming = false;
     }
@@ -163,28 +195,40 @@
   async function fetchActiveUsers() {
     try {
       const res = await fetch(apiUrl("/api/users"));
+
       if (!res.ok) return;
-      const data = await res.json();
-      if (data?.users && Array.isArray(data.users)) {
-        activeUsers = new Set(data.users);
+
+      const data: UsersResponse | null = await res.json();
+
+      if (!data) {
+        throw new Error("Invalid users response");
+      }
+
+      activeUsers.clear();
+
+      for (const user of data.users) {
+        activeUsers.add(user);
       }
     } catch (err) {
-      // Silently fail
+      console.error("Failed to fetch active users", err);
     }
   }
 
   function startUsersStream() {
     usersEventSource?.close();
     usersEventSource = new EventSource(apiUrl("/api/users/sse"));
+
     usersEventSource.addEventListener("user", (event) => {
       try {
-        const userEvent = JSON.parse(event.data);
-        if (userEvent?.action === "ADD") {
-          activeUsers = new Set([...activeUsers, userEvent.username]);
-        } else if (userEvent?.action === "REMOVE") {
-          const newSet = new Set(activeUsers);
-          newSet.delete(userEvent.username);
-          activeUsers = newSet;
+        const userEvent: UserEvent | null = JSON.parse(event.data);
+        if (!userEvent) {
+          throw new Error("Invalid user event");
+        }
+
+        if (userEvent.action === "ADD") {
+          activeUsers.add(userEvent.username);
+        } else if (userEvent.action === "REMOVE") {
+          activeUsers.delete(userEvent.username);
         }
       } catch (err) {
         console.error("Bad user event", err);
@@ -195,23 +239,34 @@
     });
   }
 
-  async function restoreUsername() {
+  async function tryRestoreUsername() {
     try {
       const res = await fetch(apiUrl("/api/username/current"), {
         credentials: "include",
       });
       if (!res.ok) return;
-      const data = await res.json();
-      if (data?.username) {
-        username = data.username;
-        claimed = true;
-        const expiresIn = normalizeSeconds(data?.expires_in);
-        if (expiresIn > 0) {
-          sessionDuration = expiresIn;
-          startCountdown(expiresIn);
-          startStream();
-        }
+
+      const data: CurrentUsernameResponse | null = await res.json();
+      if (!data) {
+        throw new Error("Invalid current username response");
       }
+
+      if (!data.username) {
+        return;
+      }
+
+      currentUsername = data.username;
+      claimed = true;
+
+      const expiresIn = normalizeSeconds(data.expires_in);
+
+      if (!expiresIn) {
+        return;
+      }
+
+      sessionDuration = expiresIn;
+      startCountdown(expiresIn);
+      startStream();
     } catch (err) {
       // Silently fail - no username to restore
     }
@@ -221,10 +276,16 @@
     try {
       const res = await fetch(apiUrl("/api/messages?limit=50"));
       if (!res.ok) throw new Error(`fetch messages failed (${res.status})`);
-      const data = await res.json();
+      const data: MessagesResponse | null = await res.json();
+
+      if (!data) {
+        messages = [];
+        return;
+      }
+
       messageIds.clear();
       messages = [];
-      for (const msg of data?.messages ?? []) {
+      for (const msg of data.messages) {
         insertMessage(msg);
       }
     } catch (err) {
@@ -259,11 +320,21 @@
         method: "POST",
         credentials: "include",
       });
+
       if (!res.ok) {
         const err = await safeJson(res);
         throw new Error(err?.error ?? "Release failed");
       }
-      notifications.showNotification("Username released.", "success");
+
+      const data: UsernameReleaseResponse | null = await res.json();
+      if (!data) {
+        throw new Error("Invalid username release response");
+      }
+
+      if (data.success) {
+        notifications.showNotification("Username released.", "success");
+        await fetchActiveUsers();
+      }
     } catch (err) {
       notifications.showNotification(err instanceof Error ? err.message : "Release failed", "error");
     } finally {
@@ -292,6 +363,7 @@
 
   function insertMessage(msg: Message, isNew = false) {
     if (messageIds.has(msg.id)) return;
+
     const next = [...messages];
     let low = 0;
     let high = next.length;
@@ -352,7 +424,7 @@
       remainingSeconds = Math.max(0, remainingSeconds - 1);
       if (remainingSeconds === RECLAIM_TRIGGER_SECONDS && autoReclaimEnabled && claimed && !autoReclaimTriggered) {
         autoReclaimTriggered = true;
-        handleClaim({ usernameInput: username, silent: true });
+        handleClaim({ usernameInput: currentUsername, silent: true });
       }
       if (remainingSeconds === 0) {
         stopCountdown();
@@ -393,7 +465,7 @@
   <main class="main">
     <section class="panel">
       <UsernameClaim
-        bind:username
+        bind:username={currentUsername}
         {claimed}
         {claiming}
         bind:autoReclaimEnabled
@@ -418,21 +490,21 @@
       <MessageList {messages} {activeUsers} />
     </section>
 
-    <section
-      class="panel"
-      bind:this={composerPanel}
-      style:transform={viewportOffset !== 0 ? `translateY(${viewportOffset}px)` : undefined}
-    >
+    <section class="panel" style:transform={viewportOffset !== 0 ? `translateY(${viewportOffset}px)` : undefined}>
       <Composer
         {claimed}
         bind:messageText
         onSubmit={handleSendMessage}
         showScrollToTop={scroll.y > 0}
         onScrollToTop={scrollToTop}
+        bind:this={composerElement}
+        onfocus={() => (composerFocused = true)}
+        onblur={() => (composerFocused = false)}
       />
     </section>
   </main>
-  <Snackbar position="bottom" />
+  <!-- <Snackbar position={composerFocused ? "top" : "bottom"} /> -->
+  <ToastStack />
 </div>
 
 <style>

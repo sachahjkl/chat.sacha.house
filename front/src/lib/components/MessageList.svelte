@@ -1,10 +1,11 @@
 <script lang="ts">
+  import type { SvelteSet } from "svelte/reactivity";
   import { fly } from "svelte/transition";
   import type { Message } from "../types";
 
   interface Props {
     messages: Message[];
-    activeUsers: Set<string>;
+    activeUsers: SvelteSet<string>;
   }
 
   let { messages, activeUsers }: Props = $props();
