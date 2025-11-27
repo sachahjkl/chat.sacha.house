@@ -24,9 +24,9 @@ type HttpResponse = warp::reply::Response;
 static DIST: Dir = include_dir!("front/dist");
 
 static SESSION_TIMEOUT_SECONDS: i64 = if cfg!(debug_assertions) {
-    60 * 5 // 5 minutes
-} else {
     10 // 10 seconds
+} else {
+    60 * 5 // 5 minutes
 };
 
 static MAX_MESSAGE_LENGTH: usize = 240;
