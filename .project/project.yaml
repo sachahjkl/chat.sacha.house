@@ -1,8 +1,8 @@
 name: "chat.sacha.house"
 description: "GL0BALLY_AVAILA8LE_CH4T_R00M - https://chat.sacha.house"
 topics: []
-homepage: ""
+homepage: "https://chat.sacha.house"
 source:
-  provider: gitlab
+  provider: github
   namespace: "sachahjkl"
   path: "sachahjkl/chat.sacha.house"
