@@ -28,11 +28,11 @@ Environment variables:
 - `BIND_PORT`: Server port (default: `3030`)
 - `RATE_LIMIT_SECS`: Rate limit window in seconds for message sending (default: `1`)
 
-## Docker
+## Podman
 
 ```bash
-docker build -t chat-sacha-house .
-docker run -p 3030:3030 chat-sacha-house
+podman build -t chat-sacha-house .
+podman run --rm -p 3030:3030 chat-sacha-house
 ```
 
 ## Features

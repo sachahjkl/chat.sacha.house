@@ -5,9 +5,13 @@ front/dist/
 *.db-shm
 *.db-wal
 .git/
+.github/
+.env
+.env.*
+**/.env
+**/.env.*
 .gitignore
 .vscode/
 .idea/
 *.md
 requests.http
-
