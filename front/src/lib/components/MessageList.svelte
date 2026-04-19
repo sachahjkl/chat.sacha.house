@@ -78,6 +78,7 @@
     margin: 0;
     color: #d0d0d0;
     line-height: 1.6;
+    word-break: break-all;
   }
 
   .empty {
