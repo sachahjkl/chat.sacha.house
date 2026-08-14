@@ -1043,7 +1043,10 @@ mod tests {
             .await;
 
         assert_eq!(resp.status(), StatusCode::OK);
-        assert!(resp.headers().get("set-cookie").is_some());
+        let body: ClaimResponse = from_slice(resp.body()).unwrap();
+        assert!(body.success);
+        assert_eq!(body.username, "grug");
+        assert!(!body.session_id.is_empty());
     }
 
     #[tokio::test]
@@ -1096,13 +1099,8 @@ mod tests {
             .reply(&app)
             .await;
         assert_eq!(claim.status(), StatusCode::OK);
-        let raw_cookie = claim
-            .headers()
-            .get("set-cookie")
-            .expect("set-cookie")
-            .to_str()
-            .unwrap();
-        let session_cookie = raw_cookie.split(';').next().expect("cookie kv").to_string();
+        let claim_body: ClaimResponse = from_slice(claim.body()).unwrap();
+        let authorization = format!("Bearer {}", claim_body.session_id);
 
         let texts = ["one", "two", "three", "four", "five"];
 
@@ -1111,7 +1109,7 @@ mod tests {
                 .method("POST")
                 .path("/api/messages")
                 .header("content-type", "application/json")
-                .header("cookie", &session_cookie)
+                .header("authorization", &authorization)
                 .body(format!(r#"{{"text":"{}"}}"#, body))
                 .reply(&app)
                 .await;
@@ -1121,7 +1119,6 @@ mod tests {
         let resp = request()
             .method("GET")
             .path("/api/messages?limit=10")
-            .header("cookie", &session_cookie)
             .reply(&app)
             .await;
         assert_eq!(resp.status(), StatusCode::OK);

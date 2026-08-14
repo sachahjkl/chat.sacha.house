@@ -11,8 +11,7 @@ Single global chat room with no authentication. Pick a username, chat in real-ti
 ## Build
 
 ```bash
-make release  # Build frontend + release binary
-make dev     # Build frontend + run dev server
+nix build
 ```
 
 ## Run
@@ -28,11 +27,12 @@ Environment variables:
 - `BIND_PORT`: Server port (default: `3030`)
 - `RATE_LIMIT_SECS`: Rate limit window in seconds for message sending (default: `1`)
 
-## Podman
+## Container
 
 ```bash
-podman build -t chat-sacha-house .
-podman run --rm -p 3030:3030 chat-sacha-house
+nix build .#dockerImage
+podman load < result
+podman run --rm -p 3030:3030 chat-sacha-house:0.1.0
 ```
 
 ## Features

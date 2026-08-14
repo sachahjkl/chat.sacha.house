@@ -10,6 +10,7 @@ on:
   workflow_dispatch:
 
 env:
+  NIX_CONFIG: extra-experimental-features = nix-command flakes
   IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
@@ -21,18 +22,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - working-directory: front
-        run: nix shell nixpkgs#bun --command bun install --frozen-lockfile
-      - working-directory: front
-        run: nix shell nixpkgs#bun --command bun run format:check
-      - working-directory: front
-        run: nix shell nixpkgs#bun --command bun run lint
-      - working-directory: front
-        run: nix shell nixpkgs#bun --command bun run check
-      - working-directory: front
-        run: nix shell nixpkgs#bun --command bun run build
+      - run: nix flake check --print-build-logs
 
-  container:
+  publish:
     if: github.event_name == 'push'
     needs: check
     runs-on: [self-hosted, nixos]
@@ -51,27 +43,16 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch }}
             type=ref,event=branch,enable=${{ github.ref_name != github.event.repository.default_branch }}
             type=ref,event=tag
-      - name: Build and push image
+      - run: nix build .#dockerImage --print-build-logs
+      - name: Push OCI image
         env:
           GHCR_TOKEN: ${{ github.token }}
           IMAGE_TAGS: ${{ steps.metadata.outputs.tags }}
-          IMAGE_LABELS: ${{ steps.metadata.outputs.labels }}
         run: |
           umask 077
-          authfile="$RUNNER_TEMP/podman-auth-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          authfile="$RUNNER_TEMP/skopeo-auth-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
           trap 'rm -f "$authfile"' EXIT
-          printf '%s' "$GHCR_TOKEN" | podman login --authfile "$authfile" ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          podman pull --authfile "$authfile" "$IMAGE_NAME:latest" || true
-
-          build_args=(--authfile "$authfile" --pull=always)
+          printf '%s' "$GHCR_TOKEN" | nix run nixpkgs#skopeo -- login --authfile "$authfile" ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           while IFS= read -r tag; do
-            [[ -n "$tag" ]] && build_args+=(--tag "$tag")
-          done <<< "$IMAGE_TAGS"
-          while IFS= read -r label; do
-            [[ -n "$label" ]] && build_args+=(--label "$label")
-          done <<< "$IMAGE_LABELS"
-          podman build "${build_args[@]}" .
-
-          while IFS= read -r tag; do
-            [[ -n "$tag" ]] && podman push --authfile "$authfile" "$tag"
+            [[ -n "$tag" ]] && nix run nixpkgs#skopeo -- copy --authfile "$authfile" --insecure-policy docker-archive:result "docker://$tag"
           done <<< "$IMAGE_TAGS"
