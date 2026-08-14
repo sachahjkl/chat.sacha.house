@@ -11,7 +11,7 @@ export class TopKStore<Key, Value> {
   constructor(
     maxSize: number,
     keySelector: (item: Value) => Key,
-    compare: (a: Key, b: Key) => number = TopKStore.descending()
+    compare: (a: Key, b: Key) => number = TopKStore.descending(),
   ) {
     this.#maxSize = maxSize;
     this.#compare = compare;
@@ -71,7 +71,7 @@ export class TopKStore<Key, Value> {
   }
 
   static descending<Key, Value>(
-    selector: (x: Value) => Key = (x) => x as unknown as Key
+    selector: (x: Value) => Key = (x) => x as unknown as Key,
   ): (a: Value, b: Value) => number {
     return (a, b) => {
       const av = selector(a);
@@ -82,7 +82,7 @@ export class TopKStore<Key, Value> {
   }
 
   static ascending<Key, Value>(
-    selector: (x: Value) => Key = (x) => x as unknown as Key
+    selector: (x: Value) => Key = (x) => x as unknown as Key,
   ): (a: Value, b: Value) => number {
     return (a, b) => {
       const av = selector(a);

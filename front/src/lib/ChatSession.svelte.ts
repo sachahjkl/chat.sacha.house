@@ -161,7 +161,6 @@ export class ChatSession {
       return { success: false };
     } finally {
       this.stopCountdown();
-      return { success: false };
     }
   }
 
@@ -202,7 +201,7 @@ export class ChatSession {
       this.claimedUsername = data.username;
 
       this.startCountdown(expiresIn);
-    } catch (err) {
+    } catch {
       // Silently fail - no username to restore
     }
   }
@@ -220,7 +219,10 @@ export class ChatSession {
 
       this.#messageList.load(data.messages);
     } catch (err) {
-      notifications.showNotification(err instanceof Error ? err.message : "Unable to load messages", "error");
+      notifications.showNotification(
+        err instanceof Error ? err.message : "Unable to load messages",
+        "error",
+      );
     }
   }
 
@@ -252,7 +254,10 @@ export class ChatSession {
 
       return { success: true };
     } catch (err) {
-      notifications.showNotification(err instanceof Error ? err.message : "Failed to send message", "error");
+      notifications.showNotification(
+        err instanceof Error ? err.message : "Failed to send message",
+        "error",
+      );
       return { success: false };
     }
   }
@@ -297,14 +302,16 @@ export class ChatSession {
       }
 
       this.totalMessages = data.total_messages;
-    } catch (err) {
+    } catch {
       // Silently fail
     }
   }
 
   private startMessagesStream() {
     this.#eventSource?.close();
-    this.#eventSource = new EventSource(this.apiUrl("/api/messages/sse"), { withCredentials: true });
+    this.#eventSource = new EventSource(this.apiUrl("/api/messages/sse"), {
+      withCredentials: true,
+    });
     this.#eventSource.addEventListener("message", (event) => {
       try {
         const msg = safeJson<Message>(event.data);

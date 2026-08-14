@@ -12,7 +12,7 @@
     onblur?: () => void;
   }
 
-  let form: HTMLFormElement;
+  let form: HTMLFormElement = $state(null!);
 
   const MAX_MESSAGE_LENGTH = 240;
 

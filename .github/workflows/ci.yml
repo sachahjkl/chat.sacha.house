@@ -6,13 +6,35 @@ on:
       - "**"
     tags:
       - "**"
+  pull_request:
   workflow_dispatch:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
+  check:
+    runs-on: [self-hosted, nixos]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - working-directory: front
+        run: nix shell nixpkgs#bun --command bun install --frozen-lockfile
+      - working-directory: front
+        run: nix shell nixpkgs#bun --command bun run format:check
+      - working-directory: front
+        run: nix shell nixpkgs#bun --command bun run lint
+      - working-directory: front
+        run: nix shell nixpkgs#bun --command bun run check
+      - working-directory: front
+        run: nix shell nixpkgs#bun --command bun run build
+
   container:
+    if: github.event_name == 'push'
+    needs: check
     runs-on: [self-hosted, nixos]
     permissions:
       contents: read

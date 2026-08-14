@@ -9,7 +9,7 @@ export const visualViewportHeight = new InternalReactiveValue(
       on(window.visualViewport, "resize", update);
       on(window.visualViewport, "scroll", update);
     }
-  }
+  },
 );
 
 // this is a svelte attachment cf. https://svelte.dev/docs/svelte/@attach
