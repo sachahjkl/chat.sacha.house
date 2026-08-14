@@ -1,5 +1,3 @@
-[English](README.md) | [Français](README.fr.md)
-
 # chat.sacha.house
 
 Single global chat room with no authentication. Pick a username, chat in real-time.
