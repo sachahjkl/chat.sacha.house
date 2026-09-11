@@ -43,6 +43,8 @@ CI deploys that immutable digest to staging. The production workflow verifies an
 
 Nomad stores each environment in its own dynamic host volume. Use `deploy/backup.sh` and `deploy/restore.sh` as root.
 
+Stop the target job and wait for all allocations to release SQLite before restoration.
+
 ## Features
 
 - Username reservation via session cookie

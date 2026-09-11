@@ -21,6 +21,15 @@ archive="$(realpath -- "$2")"
 checksum="$(realpath -- "${3:-$2.sha256}")"
 volume_name="chat-sacha-house-${namespace}-data"
 
+volume_path="$(nomad volume status -namespace "$namespace" -json "$volume_name" | jq -r .HostPath)"
+case "$volume_path" in
+  /data/Services/nomad/volumes/*) ;;
+  *)
+    printf 'Nomad returned an unexpected volume path\n' >&2
+    exit 1
+    ;;
+esac
+
 read -r expected_hash expected_name <"$checksum"
 if [[ ! "$expected_hash" =~ ^[0-9a-f]{64}$ ]] || [[ "$expected_name" != "$(basename -- "$archive")" ]]; then
   printf 'backup checksum has an invalid format\n' >&2
@@ -40,14 +49,11 @@ if [[ -n "$job_status" && "$job_status" != dead ]]; then
   printf 'stop the %s chat-sacha-house Nomad job before restoration\n' "$namespace" >&2
   exit 1
 fi
+if fuser "$volume_path/chat.db" >/dev/null 2>&1; then
+  printf 'wait for all %s allocations to release the database\n' "$namespace" >&2
+  exit 1
+fi
 
-volume_path="$(nomad volume status -namespace "$namespace" -json "$volume_name" | jq -r .HostPath)"
-case "$volume_path" in
-  /data/Services/nomad/volumes/*) ;;
-  *)
-    printf 'Nomad returned an unexpected volume path\n' >&2
-    exit 1
-    ;;
-esac
+rm -f -- "$volume_path/chat.db-wal" "$volume_path/chat.db-shm"
 install -o 65532 -g 65532 -m 0600 "$archive" "$volume_path/chat.db"
 printf 'restored %s from %s; deploy the validated image to check application health\n' "$volume_name" "$archive"
