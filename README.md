@@ -35,6 +35,14 @@ podman load < result
 podman run --rm -p 3030:3030 chat-sacha-house:0.1.0
 ```
 
+## Deployment
+
+CI checks each change on `ubuntu-latest`. Accepted `master` commits publish, sign, and attest an OCI image.
+
+CI deploys that immutable digest to staging. The production workflow verifies and promotes the exact staging digest.
+
+Nomad stores each environment in its own dynamic host volume. Use `deploy/backup.sh` and `deploy/restore.sh` as root.
+
 ## Features
 
 - Username reservation via session cookie

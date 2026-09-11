@@ -8,4 +8,3 @@ release: frontend
 
 dev: frontend
 	cargo run
-

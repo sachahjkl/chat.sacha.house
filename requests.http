@@ -38,4 +38,3 @@ GET {{base}}/api/sse?token={{token}}
 ### Release Username
 POST {{base}}/api/username/release
 Authorization: Bearer {{token}}
-

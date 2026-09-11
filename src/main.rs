@@ -154,8 +154,9 @@ async fn main() -> Result<()> {
     }
     pretty_env_logger::init();
 
-    let db_url = "sqlite:db/chat.db?mode=rwc";
-    let db = init_db(db_url).await?;
+    let db_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:db/chat.db?mode=rwc".to_string());
+    let db = init_db(&db_url).await?;
 
     let (tx, _rx) = broadcast::channel(100);
     let (users_tx, _users_rx) = broadcast::channel(100);
@@ -252,6 +253,10 @@ async fn main() -> Result<()> {
 fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
     let state_filter = warp::any().map(move || state.clone());
 
+    let health_route = warp::get()
+        .and(warp::path!("api" / "health"))
+        .map(|| json_response(StatusCode::OK, &json!({ "status": "ok" })));
+
     let claim_route = warp::post()
         .and(warp::path!("api" / "username" / "claim"))
         .and(warp::body::json())
@@ -310,7 +315,9 @@ fn build_routes(state: AppState) -> BoxedFilter<(HttpResponse,)> {
 
     let static_files = warp::get().and(warp::path::tail()).and_then(handle_static);
 
-    claim_route
+    health_route
+        .or(claim_route)
+        .unify()
         .or(get_current_username_route)
         .unify()
         .or(release_route)
