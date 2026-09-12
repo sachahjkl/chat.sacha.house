@@ -41,7 +41,7 @@ CI checks each change on `ubuntu-latest`. Accepted `master` commits publish, sig
 
 CI deploys that immutable digest to staging. The production workflow verifies and promotes the exact staging digest.
 
-Nomad stores each environment in its own dynamic host volume. Use `deploy/backup.sh` and `deploy/restore.sh` as root.
+Nomad stores each environment in its own dynamic host volume.
 
 Stop the target job and wait for all allocations to release SQLite before restoration.
 
