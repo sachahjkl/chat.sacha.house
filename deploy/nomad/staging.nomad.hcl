@@ -87,7 +87,7 @@ job "chat-sacha-house" {
         port     = "http"
         tags = [
           "traefik.enable=true",
-          "traefik.http.routers.chat-sacha-house-staging.entrypoints=nomad",
+          "traefik.http.routers.chat-sacha-house-staging.entrypoints=websecure",
           "traefik.http.routers.chat-sacha-house-staging.middlewares=chat-sacha-house-staging-noindex",
           "traefik.http.routers.chat-sacha-house-staging.rule=Host(`staging.chat.sacha.house`)",
           "traefik.http.routers.chat-sacha-house-staging.tls.domains[0].main=staging.chat.sacha.house",
