@@ -3,9 +3,23 @@ application:
   port: 3030
   healthPath: /api/health
 
-domain:
-  production: chat.sacha.house
-  staging: staging.chat.sacha.house
+modules:
+  task:
+    - deploy/task.hcl
 
+environments:
+  staging:
+    domain: staging.chat.sacha.house
+    noIndex: true
+  production:
+    domain: chat.sacha.house
+
+    modules:
+      group:
+        - deploy/group-production.hcl
 volume:
   mountPath: /data
+
+resources:
+  cpu: 500
+  memory: 512
