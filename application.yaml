@@ -1,0 +1,11 @@
+application:
+  name: chat-sacha-house
+  port: 3030
+  healthPath: /api/health
+
+domain:
+  production: chat.sacha.house
+  staging: staging.chat.sacha.house
+
+volume:
+  mountPath: /data
