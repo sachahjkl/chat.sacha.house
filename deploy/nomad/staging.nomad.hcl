@@ -87,6 +87,13 @@ job "chat-sacha-house" {
         name     = "chat-sacha-house-staging"
         provider = "nomad"
         port     = "http"
+        tags = [
+          "traefik.enable=true",
+          "traefik.http.routers.chat-sacha-house-staging.entrypoints=nomad",
+          "traefik.http.routers.chat-sacha-house-staging.middlewares=chat-sacha-house-staging-noindex",
+          "traefik.http.routers.chat-sacha-house-staging.rule=Host(`staging.chat.sacha.house`)",
+          "traefik.http.middlewares.chat-sacha-house-staging-noindex.headers.customresponseheaders.X-Robots-Tag=noindex, nofollow",
+        ]
 
         check {
           name     = "HTTP health"

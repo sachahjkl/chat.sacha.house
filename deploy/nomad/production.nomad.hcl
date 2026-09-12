@@ -113,6 +113,11 @@ job "chat-sacha-house" {
         name     = "chat-sacha-house-production"
         provider = "nomad"
         port     = "http"
+        tags = [
+          "traefik.enable=true",
+          "traefik.http.routers.chat-sacha-house-production.entrypoints=nomad",
+          "traefik.http.routers.chat-sacha-house-production.rule=Host(`chat.sacha.house`)",
+        ]
 
         check {
           name     = "HTTP health"
